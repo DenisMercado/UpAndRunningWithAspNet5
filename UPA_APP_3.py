@@ -10,6 +10,10 @@ from collections import Counter
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
+
+import cx_Oracle
+import teradatasql
+
 # import teradatasql # Kept commented as in original
 
 # Define the pozo class at the top level
@@ -1515,6 +1519,76 @@ class UPAWorkflow:
 
         self.console.print(table)
         self.console.print("\n[green]Reporte mensual de planes UPA completado.[/green]")
+
+def conectarse_cns(query):
+    
+    user_id = 'sahara'    
+    user_password = 'sahara'
+    
+    server = 'SLPBUETBORA15'    
+    port = 1527    
+    sid = "PSSH" 
+    
+    # Crea el DSN (Data Source Name) para la conexión
+    dsn_tns = cx_Oracle.makedsn(server, port, sid)
+    
+    # Crea el motor de SQLAlchemy
+    engine = create_engine(f'oracle+cx_oracle://{user_id}:{user_password}@{dsn_tns}')
+    
+    # Usa el motor de SQLAlchemy con pandas
+    df = pd.read_sql(query, engine)
+    
+    try:    
+        df['start_month'] = df['FECHA'].astype('str').str.slice(0,7)
+        df['FECHA'] = pd.to_datetime(df['FECHA']) # Usar pd.to_datetime es más robusto
+        df['days_moth'] = df["FECHA"].dt.daysinmonth
+        df["month"] = df["FECHA"].dt.month
+        df["year"] = df["FECHA"].dt.year
+        df.loc[df['start_month'] == max(df['start_month']), 'days_moth'] = max(df['FECHA']).day
+
+    except KeyError: # Es más específico capturar el error esperado
+         print("Error: La columna 'FECHA' no se encontró en los resultados de la consulta.")
+    except Exception as e:
+         print(f"Ocurrió un error inesperado: {e}")
+        
+    print(df.head())
+    return df
+
+def conectarse_teradata(query):
+    dict_conection = {'host':'tdprod'
+                    ,'database':'p_dim_v'
+                    ,'logmech' : 'LDAP'
+                    ,'user': 'ry32287'#os.getenv('Usuario')
+                    ,'password': '4theEmperor!!' #os.getenv('Contraseña')
+                    ,'DBS_PORT':1025}
+ 
+ 
+    conexion = teradatasql.connect(**dict_conection)
+
+
+    # Se corrigió la consulta para manejar casos donde el delimitador '[' no existe, usando CASE.
+
+    df_nombres = ['Metodo_Produccion','Tipo_Pozo','Clase_Pozo','Tipo_Completacion']
+    dfs = {}
+    sql_querys = [query]
+    # Esta consullta sirve para saber por que batería se produce cada pozo 
+    # sql_query5= f"Select  * from UPS_DIM_JERARQUIA_PRODUCCION WHERE {string_consulta}"
+
+    # UPS_DIM_TIPO_POZO
+
+ 
+    ## CREAR UN CURSOR Y EJECUTAR LA CONSULTA SQL
+ 
+    cursor = conexion.cursor()
+    for i, query in enumerate(sql_querys):
+        cursor.execute(query)
+        columnas = [desc[0] for desc in cursor.description]
+        resultados = cursor.fetchall()
+        df = pd.DataFrame(resultados, columns=columnas)
+        dfs[df_nombres[i]] = df
+    print("DataFrames creados exitosamente.")
+    print(dfs)
+    return dfs
 
 
 def main_menu():

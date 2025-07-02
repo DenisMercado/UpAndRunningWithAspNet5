@@ -454,21 +454,22 @@ class UPAWorkflow:
         return file_path, df  # Return the original file_path and the DataFrame
 
     def run_section_1_load_excel_data(self):
-        self.console.rule("[bold blue]1. Carga y Procesamiento Inicial de Datos Excel[/bold blue]")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            columns_to_read_config = {
-                "datos_prueba/UPS_DIM_COMPLETACION.xlsx": ['Completacion_Nombre_Corto', 'Metodo_Produccion_Actual_Cd', 'Bloque_Monitoreo_Nombre', 'Fecha_Inicio_Produccion_Dt'],
-                "datos_prueba/CNS_NOC_PI.xlsx": ['NOMBRE_CORTO_POZO', 'FECHA', 'PRESION_CABEZA', 'PRESION_LINEA'],
-                "datos_prueba/CNS_NOC_TOW_CONTROLES.xlsx": ['NOMBRE_CORTO_POZO', 'TEST_DT', 'TEST_PURP_CD', 'BRUTA', 'CHOKE_SIZE','PROD_OIL_24'],
-                "datos_prueba/CNS_NOC_TOW_PAR_PERD.xlsx": ['NOMBRE_CORTO_POZO', 'PROD_DT', 'HORAS_DE_PARO', 'RUBRO', 'GRAN_RUBRO','PERDIDA_PETROLEO'],
-                "datos_prueba/NOC_G&R_PERFIL_UPA_DECLINO.xlsx": ['POZO', 'FECHA', 'BRUTA_(m3/DC)', 'PETRÓLEO_(m3/DC)', 'AGUA_(m3/DC)'], # Added AGUA
-                "datos_prueba/GIDI_POZO.xlsx": ['padre', 'Inicio Fractura', 'SE actual', 'Tipo Aseg IP', 'Zona', 'MPE_rem','Meses_Desplazados'], # Added Meses_Desplazados if it's read directly
-                "datos_prueba/PA_2025_Activos.xlsx": ['Area de Reserva'],
-                "datos_prueba/UPS_FT_PROY_CONSULTA_ACTIVIDAD.xlsx": ['Sigla_Pozo_Cd', 'Fecha_Inicio_Dttm', 'Operacion_Name', 'Area_Reserva_Name'],
-                "datos_prueba/FDD_CNS_NOC_OW_INSTALACIONES.xlsx": ['NOMBRE_POZO', 'COMPONENTE', 'FECHA_INSTALACION'],
-                "datos_prueba/UPS_FT_CABEZA_POZO.xlsx": ['Boca_Pozo_Nombre_Oficial', 'NOMBRE_COMP', 'FECHA_INSTALACION']
-            }
+            self.console.rule("[bold blue]1. Carga y Procesamiento Inicial de Datos Excel[/bold blue]")
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    columns_to_read_config = {
+                        "datos_prueba/UPS_DIM_COMPLETACION.xlsx": ['Completacion_Nombre_Corto', 'Metodo_Produccion_Actual_Cd', 'Bloque_Monitoreo_Nombre', 'Fecha_Inicio_Produccion_Dt'],
+                        "datos_prueba/CNS_NOC_PI.xlsx": ['NOMBRE_CORTO_POZO', 'FECHA', 'PRESION_CABEZA', 'PRESION_LINEA'],
+                        "datos_prueba/CNS_NOC_TOW_CONTROLES.xlsx": ['NOMBRE_CORTO_POZO', 'TEST_DT', 'TEST_PURP_CD', 'BRUTA', 'CHOKE_SIZE','PROD_OIL_24'],
+                        "datos_prueba/CNS_NOC_TOW_PAR_PERD.xlsx": ['NOMBRE_CORTO_POZO', 'PROD_DT', 'HORAS_DE_PARO', 'RUBRO', 'GRAN_RUBRO','PERDIDA_PETROLEO'],
+                        "datos_prueba/NOC_G&R_PERFIL_UPA_DECLINO.xlsx": ['POZO', 'FECHA', 'BRUTA_(m3/DC)', 'PETRÓLEO_(m3/DC)', 'AGUA_(m3/DC)'], # Added AGUA
+                        "datos_prueba/GIDI_POZO.xlsx": ['padre', 'Inicio Fractura', 'SE actual', 'Tipo Aseg IP', 'Zona', 'MPE_rem','Meses_Desplazados'], # Added Meses_Desplazados if it's read directly
+                        "datos_prueba/PA_2025_Activos.xlsx": ['Area de Reserva'],
+                        "datos_prueba/UPS_FT_PROY_CONSULTA_ACTIVIDAD.xlsx": ['Sigla_Pozo_Cd', 'Fecha_Inicio_Dttm', 'Operacion_Name', 'Area_Reserva_Name'],
+                        "datos_prueba/FDD_CNS_NOC_OW_INSTALACIONES.xlsx": ['NOMBRE_POZO', 'COMPONENTE', 'FECHA_INSTALACION'],
+                        "datos_prueba/UPS_FT_CABEZA_POZO.xlsx": ['Boca_Pozo_Nombre_Oficial', 'NOMBRE_COMP', 'FECHA_INSTALACION']
+                    }
         
             file_paths_ordered = [
                 "datos_prueba/UPS_DIM_COMPLETACION.xlsx", "datos_prueba/CNS_NOC_PI.xlsx",
@@ -533,133 +534,194 @@ class UPAWorkflow:
                 if 'NOMBRE_COMP' in self.UPS_FT_CABEZA_POZO.columns:
                     self.UPS_FT_CABEZA_POZO_filtrado = self.UPS_FT_CABEZA_POZO[self.UPS_FT_CABEZA_POZO['NOMBRE_COMP'].astype(str).str.contains('ROD LOCK BOP', na=False)]
 
-            if not self.GIDI_POZO.empty and 'padre' in self.GIDI_POZO.columns and \
-            'SE actual' in self.GIDI_POZO.columns and 'Tipo Aseg IP' in self.GIDI_POZO.columns and \
-            'Inicio Fractura' in self.GIDI_POZO.columns and not self.UPS_FT_CABEZA_POZO_filtrado.empty and \
-            'Nombre_Boca_Pozo_Oficial' in self.UPS_FT_CABEZA_POZO_filtrado.columns:
-            
+            if not self.GIDI_POZO.empty and not self.UPS_FT_CABEZA_POZO_filtrado.empty:
                 self.GIDI_POZO['Inicio Fractura'] = pd.to_datetime(self.GIDI_POZO['Inicio Fractura'], errors='coerce')
                 self.actividad_aseguramiento = self.GIDI_POZO[
                     (self.GIDI_POZO['SE actual'] == 'Bombeo Mecánico') & 
                     (self.GIDI_POZO['Tipo Aseg IP'] == 'AD') & 
                     (~self.GIDI_POZO['padre'].isin(self.UPS_FT_CABEZA_POZO_filtrado['Nombre_Boca_Pozo_Oficial']))
-                ][['padre', 'Inicio Fractura', 'Zona']].copy() # Use .copy()
+                ][['padre', 'Inicio Fractura', 'Zona']].copy()
                 if not self.actividad_aseguramiento.empty:
                     self.actividad_aseguramiento['Fecha Aseg'] = self.actividad_aseguramiento['Inicio Fractura'].apply(lambda x: x - pd.DateOffset(months=1) if pd.notna(x) else pd.NaT)
 
-            # GIDI_POZO 'Meses_Desplazados' and 'fecha_interferencia'
-            if not self.GIDI_POZO.empty and 'MPE_rem' in self.GIDI_POZO.columns and 'Inicio Fractura' in self.GIDI_POZO.columns:
-                def calcular_meses_desplazados_gidi(mpe_rem): # Renamed to avoid conflict
-                    if pd.isna(mpe_rem): return None # Handle NaN MPE_rem
+            if not self.GIDI_POZO.empty:
+                def calcular_meses_desplazados_gidi(mpe_rem):
+                    if pd.isna(mpe_rem): return None
                     if mpe_rem <= 100: return 1
-                    elif 100 < mpe_rem <= 250: return 2 # Corrected condition from 25 to 250
+                    elif 100 < mpe_rem <= 250: return 2
                     elif 250 < mpe_rem <= 400: return 3
                     elif mpe_rem > 400: return 4
-                    return None # Default if no condition met
+                    return None
                 self.GIDI_POZO['Meses_Desplazados'] = self.GIDI_POZO['MPE_rem'].apply(calcular_meses_desplazados_gidi)
                 self.GIDI_POZO['Inicio Fractura'] = pd.to_datetime(self.GIDI_POZO['Inicio Fractura'], errors='coerce')
                 self.GIDI_POZO['fecha_interferencia'] = self.GIDI_POZO['Inicio Fractura'].dt.to_period('M').dt.start_time
-        
-            # Load ULTIMA_UPA and UPA_actual
-            try:
-                self.ULTIMA_UPA = pd.read_excel("datos_prueba/UPA_anterior.xlsx")
-                if not self.ULTIMA_UPA.empty:
-                    self.ULTIMA_UPA['FECHA'] = pd.to_datetime(self.ULTIMA_UPA['FECHA'], errors='coerce')
-                    if 'NOMBRE POZO' in self.ULTIMA_UPA.columns:
-                        self.ULTIMA_UPA['NOMBRE POZO'] = self.ULTIMA_UPA['NOMBRE POZO'].astype(str).str.replace('YPF.Nq.', '', regex=False)
-            except Exception as e:
-                self.console.print(f"[red]Error cargando UPA_anterior.xlsx: {e}[/red]")
-                self.ULTIMA_UPA = pd.DataFrame()
+            
+            if not self.ULTIMA_UPA.empty:
+                self.ULTIMA_UPA['FECHA'] = pd.to_datetime(self.ULTIMA_UPA['FECHA'], errors='coerce')
+                if 'NOMBRE POZO' in self.ULTIMA_UPA.columns:
+                    self.ULTIMA_UPA['NOMBRE POZO'] = self.ULTIMA_UPA['NOMBRE POZO'].astype(str).str.replace('YPF.Nq.', '', regex=False)
 
-            try:
-                self.UPA_actual = pd.read_excel("datos_prueba/UPA_actual.xlsx")
-                if not self.UPA_actual.empty:
-                    self.UPA_actual['FECHA'] = pd.to_datetime(self.UPA_actual['FECHA'], errors='coerce')
-                    if 'NOMBRE POZO' in self.UPA_actual.columns:
-                        self.UPA_actual['NOMBRE POZO'] = self.UPA_actual['NOMBRE POZO'].astype(str).str.replace('YPF.Nq.', '', regex=False)
-            except Exception as e:
-                self.console.print(f"[red]Error cargando UPA_actual.xlsx: {e}[/red]")
-                self.UPA_actual = pd.DataFrame()
+            if not self.UPA_actual.empty:
+                self.UPA_actual['FECHA'] = pd.to_datetime(self.UPA_actual['FECHA'], errors='coerce')
+                if 'NOMBRE POZO' in self.UPA_actual.columns:
+                    self.UPA_actual['NOMBRE POZO'] = self.UPA_actual['NOMBRE POZO'].astype(str).str.replace('YPF.Nq.', '', regex=False)
 
-            # Process UPS_DIM_COMPLETACION 'Campana'
-            if not self.UPS_DIM_COMPLETACION.empty and 'Fecha_Inicio_Produccion_Dt' in self.UPS_DIM_COMPLETACION.columns:
+            if not self.UPS_DIM_COMPLETACION.empty:
                 self.UPS_DIM_COMPLETACION['Fecha_Inicio_Produccion_Dt'] = pd.to_datetime(self.UPS_DIM_COMPLETACION['Fecha_Inicio_Produccion_Dt'], errors='coerce')
                 self.UPS_DIM_COMPLETACION['Campana'] = self.UPS_DIM_COMPLETACION['Fecha_Inicio_Produccion_Dt'].dt.year
                 self.UPS_DIM_COMPLETACION = self.UPS_DIM_COMPLETACION[self.UPS_DIM_COMPLETACION['Campana'] > 2016]
 
-            # Load and process FDD_CNS_GRALO_FDP_DIAGNOSTICO
-            try:
-                self.console.print("[cyan]DEBUG: Intentando cargar FDD_CNS_GRALO_FDP_DIAGNOSTICO.xlsx[/cyan]")
-                self.FDD_CNS_GRALO_FDP_DIAGNOSTICO = pd.read_excel("datos_prueba/FDD_CNS_GRALO_FDP_DIAGNOSTICO.xlsx")
-                self.console.print(f"[cyan]DEBUG: FDD_CNS_GRALO_FDP_DIAGNOSTICO cargado. Vacío: {self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.empty}. Shape: {self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.shape}[/cyan]")
-                if not self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.empty:
-                    self.console.print(f"[cyan]DEBUG: Columnas en FDD_CNS_GRALO_FDP_DIAGNOSTICO: {self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.columns.tolist()}[/cyan]")
-                    if 'FECHA_DIAGNOSTICO' in self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.columns:
-                        self.FDD_CNS_GRALO_FDP_DIAGNOSTICO['FECHA_DIAGNOSTICO'] = pd.to_datetime(self.FDD_CNS_GRALO_FDP_DIAGNOSTICO['FECHA_DIAGNOSTICO'], errors='coerce')
-                        self.console.print("[cyan]DEBUG: Columna FECHA_DIAGNOSTICO procesada.[/cyan]")
-                    else:
-                        self.console.print("[yellow]ADVERTENCIA: Columna 'FECHA_DIAGNOSTICO' no encontrada en FDD_CNS_GRALO_FDP_DIAGNOSTICO.[/yellow]")
+            if not self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.empty:
+                if 'FECHA_DIAGNOSTICO' in self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.columns:
+                    self.FDD_CNS_GRALO_FDP_DIAGNOSTICO['FECHA_DIAGNOSTICO'] = pd.to_datetime(self.FDD_CNS_GRALO_FDP_DIAGNOSTICO['FECHA_DIAGNOSTICO'], errors='coerce')
+                if 'NOMBRE_CORTO_POZO' in self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.columns:
+                    self.FDD_CNS_GRALO_FDP_DIAGNOSTICO['NOMBRE_CORTO_POZO'] = self.FDD_CNS_GRALO_FDP_DIAGNOSTICO['NOMBRE_CORTO_POZO'].astype(str).str.replace('YPF.Nq.', '', regex=False)
+                    self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos = self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.sort_values('FECHA_DIAGNOSTICO').groupby('NOMBRE_CORTO_POZO').last().reset_index()
+            
+            self.console.print("[green]Post-procesamiento completado.[/green]")
+            # self.console.print("[green]Selección de columnas completada.[/green]")
 
-                    if 'NOMBRE_CORTO_POZO' in self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.columns:
-                        self.FDD_CNS_GRALO_FDP_DIAGNOSTICO['NOMBRE_CORTO_POZO'] = self.FDD_CNS_GRALO_FDP_DIAGNOSTICO['NOMBRE_CORTO_POZO'].astype(str).str.replace('YPF.Nq.', '', regex=False)
-                        self.console.print("[cyan]DEBUG: Columna NOMBRE_CORTO_POZO procesada.[/cyan]")
-                        
-                        # Verifica el DataFrame antes del groupby
-                        # self.console.print("[cyan]DEBUG: FDD_CNS_GRALO_FDP_DIAGNOSTICO ANTES de groupby (primeras filas):[/cyan]")
-                        # self.console.print(self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.head())
 
-                        self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos = self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.sort_values('FECHA_DIAGNOSTICO').groupby('NOMBRE_CORTO_POZO').last().reset_index()
-                        self.console.print(f"[cyan]DEBUG: FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos creado. Vacío: {self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos.empty}. Shape: {self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos.shape}[/cyan]")
-                    else:
-                        self.console.print("[yellow]ADVERTENCIA: Columna 'NOMBRE_CORTO_POZO' no encontrada en FDD_CNS_GRALO_FDP_DIAGNOSTICO. FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos no se creará/actualizará.[/yellow]")
-                else:
-                    self.console.print("[yellow]ADVERTENCIA: FDD_CNS_GRALO_FDP_DIAGNOSTICO está vacío después de la carga. FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos no se creará/actualizará.[/yellow]")
-            except Exception as e:
-                self.console.print(f"[red]Error cargando o procesando FDD_CNS_GRALO_FDP_DIAGNOSTICO.xlsx: {e}[/red]")
-                self.FDD_CNS_GRALO_FDP_DIAGNOSTICO = pd.DataFrame()
-                self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos = pd.DataFrame()        
-        self.console.print("[green]Sección 1: Carga de datos de Excel completada (antes de _select_columns).[/green]") # Modificado para claridad
-        self._select_columns() # Call column selection internally
-        self.console.print(f"[cyan]DEBUG: Estado de FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos DESPUÉS de _select_columns: Shape={self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos.shape}, Vacío={self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos.empty}[/cyan]")
-        self.console.print("[green]Sección 1: Carga de datos de Excel completada (después de _select_columns).[/green]")
-
-    def _select_columns(self):
-        # This is the logic from "Descarta todas las columnas no usadas..."
-        # self.console.print("Seleccionando columnas finales para DataFrames...")
-        cols_to_keep = {
-            'UPS_DIM_COMPLETACION': ['Completacion_Nombre_Corto', 'Metodo_Produccion_Actual_Cd', 'Bloque_Monitoreo_Nombre', 'Fecha_Inicio_Produccion_Dt', 'Campana'],
-            'CNS_NOC_PI': ['NOMBRE_CORTO_POZO', 'FECHA', 'PRESION_CABEZA', 'PRESION_LINEA'],
-            'CNS_NOC_TOW_CONTROLES': ['NOMBRE_CORTO_POZO', 'TEST_DT', 'TEST_PURP_CD', 'BRUTA', 'CHOKE_SIZE','PROD_OIL_24'],
-            'CNS_NOC_TOW_PAR_PERD': ['NOMBRE_CORTO_POZO', 'PROD_DT', 'HORAS_DE_PARO', 'RUBRO', 'GRAN_RUBRO','PERDIDA_PETROLEO'],
-            'NOC_GR_PERFIL_UPA_DECLINO': ['POZO', 'FECHA', 'BRUTA_(m3/DC)', 'PETRÓLEO_(m3/DC)', 'AGUA_(m3/DC)'],
-            'GIDI_POZO': ['padre', 'Inicio Fractura', 'SE actual', 'Tipo Aseg IP', 'Zona', 'MPE_rem','Meses_Desplazados','fecha_interferencia'],
-            'PA_2025_Activos': ['Area de Reserva'],
-            'UPS_FT_PROY_CONSULTA_ACTIVIDAD': ['Sigla_Pozo_Cd', 'Fecha_Inicio_Dttm', 'Operacion_Name', 'Area_Reserva_Name'],
-            'FDD_CNS_NOC_OW_INSTALACIONES': ['NOMBRE_POZO', 'COMPONENTE', 'FECHA_INSTALACION'], # Original selection
-            'FDD_CNS_NOC_OW_INSTALACIONES_ultimos': self.FDD_CNS_NOC_OW_INSTALACIONES_ultimos.columns.tolist(), # Keep all from derived
-            'UPS_FT_CABEZA_POZO': ['Boca_Pozo_Nombre_Oficial', 'NOMBRE_COMP', 'FECHA_INSTALACION', 'Nombre_Boca_Pozo_Oficial'],
-            'UPS_FT_CABEZA_POZO_filtrado': self.UPS_FT_CABEZA_POZO_filtrado.columns.tolist(), # Keep all from derived
-            'actividad_aseguramiento': self.actividad_aseguramiento.columns.tolist(), # Keep all from derived
-            'ULTIMA_UPA': self.ULTIMA_UPA.columns.tolist(),
-            'UPA_actual': self.UPA_actual.columns.tolist(),
-            'FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos': self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos.columns.tolist()
+    def run_section_1b_load_from_database(self):
+        self.console.rule("[bold blue]1B. Carga y Procesamiento Inicial desde Bases de Datos[/bold blue]")
+        
+        # Configuración de columnas a leer (reutilizada de la carga de Excel)
+        columns_to_read_config = {
+            "UPS_DIM_COMPLETACION": ['Completacion_Nombre_Corto', 'Metodo_Produccion_Actual_Cd', 'Bloque_Monitoreo_Nombre', 'Fecha_Inicio_Produccion_Dt'],
+            "CNS_NOC_PI": ['NOMBRE_CORTO_POZO', 'FECHA', 'PRESION_CABEZA', 'PRESION_LINEA'],
+            "CNS_NOC_TOW_CONTROLES": ['NOMBRE_CORTO_POZO', 'TEST_DT', 'TEST_PURP_CD', 'BRUTA', 'CHOKE_SIZE','PROD_OIL_24'],
+            "CNS_NOC_TOW_PAR_PERD": ['NOMBRE_CORTO_POZO', 'PROD_DT', 'HORAS_DE_PARO', 'RUBRO', 'GRAN_RUBRO','PERDIDA_PETROLEO'],
+            "NOC_GR_PERFIL_UPA_DECLINO": ['POZO', 'FECHA', 'BRUTA_(m3/DC)', 'PETRÓLEO_(m3/DC)', 'AGUA_(m3/DC)'],
+            "UPS_FT_PROY_CONSULTA_ACTIVIDAD": ['Sigla_Pozo_Cd', 'Fecha_Inicio_Dttm', 'Operacion_Name', 'Area_Reserva_Name'],
+            "FDD_CNS_NOC_OW_INSTALACIONES": ['NOMBRE_POZO', 'COMPONENTE', 'FECHA_INSTALACION'],
+            "UPS_FT_CABEZA_POZO": ['Boca_Pozo_Nombre_Oficial', 'NOMBRE_COMP', 'FECHA_INSTALACION']
         }
-        for df_name_str, selected_cols in cols_to_keep.items():
-            if hasattr(self, df_name_str):
-                df_attr = getattr(self, df_name_str)
-                if isinstance(df_attr, pd.DataFrame) and not df_attr.empty:
-                    # Filter out columns not present in the DataFrame to avoid KeyError
-                    actual_cols_to_select = [col for col in selected_cols if col in df_attr.columns]
-                    if not actual_cols_to_select and selected_cols : # if selected_cols was not empty but actual is, means no common cols
-                         # self.console.print(f"[yellow]Advertencia: No hay columnas comunes para seleccionar en {df_name_str}. Se mantiene original.[/yellow]")
-                         pass
-                    elif len(actual_cols_to_select) < len(selected_cols):
-                        missing_cols = set(selected_cols) - set(actual_cols_to_select)
-                        # self.console.print(f"[yellow]Advertencia: Columnas {missing_cols} no encontradas en {df_name_str}. Se seleccionan las disponibles.[/yellow]")
-                        setattr(self, df_name_str, df_attr[actual_cols_to_select])
-                    else:
-                         setattr(self, df_name_str, df_attr[actual_cols_to_select])
-        # self.console.print("[green]Selección de columnas completada.[/green]")
+
+        # Mapeo de nombres de DataFrame a nombres de tabla y base de datos
+        db_map = {
+            'UPS_DIM_COMPLETACION': 'teradata', 'CNS_NOC_PI': 'cns',
+            'CNS_NOC_TOW_CONTROLES': 'cns', 'CNS_NOC_TOW_PAR_PERD': 'cns',
+            'NOC_GR_PERFIL_UPA_DECLINO': 'cns', # Asumiendo que NOC es de CNS
+            'UPS_FT_PROY_CONSULTA_ACTIVIDAD': 'teradata',
+            'FDD_CNS_NOC_OW_INSTALACIONES': 'cns', # Asumiendo que FDD_CNS es de CNS
+            'UPS_FT_CABEZA_POZO': 'teradata'
+        }
+
+        # Generar y ejecutar consultas
+        for df_name, db_type in tqdm(db_map.items(), desc="Consultando bases de datos"):
+            try:
+                columns_list = columns_to_read_config[df_name.replace('.xlsx', '')]
+                columns_str = ", ".join(f'"{col}"' for col in columns_list) # Usar comillas por si hay mayúsculas/minúsculas
+                
+                df = pd.DataFrame()
+                if db_type == 'cns':
+                    table_name = f"SAHARA.{df_name}"
+                    query = f"SELECT {columns_str} FROM {table_name}"
+                    self.console.print(f"\n[cyan]Ejecutando en CNS:[/cyan] {query}")
+                    df = conectarse_cns(query)
+                elif db_type == 'teradata':
+                    table_name = f"P_DIM_V.{df_name}"
+                    query = f"SELECT {columns_str} FROM {table_name}"
+                    self.console.print(f"\n[cyan]Ejecutando en Teradata:[/cyan] {query}")
+                    df = conectarse_teradata(query)
+                
+                setattr(self, df_name, df)
+                self.console.print(f"[green]OK: DataFrame '{df_name}' cargado desde {db_type.upper()}. Shape: {df.shape}[/green]")
+
+            except Exception as e:
+                self.console.print(f"[red]Error al cargar '{df_name}' desde la base de datos: {e}[/red]")
+                setattr(self, df_name, pd.DataFrame()) # Asignar DF vacío en caso de error
+
+        # Cargar los excels restantes que no se consultan a la BD
+        self.console.rule("[bold blue]Cargando archivos Excel restantes[/bold blue]")
+        excel_files_to_load = {
+            "GIDI_POZO": "datos_prueba/GIDI_POZO.xlsx",
+            "PA_2025_Activos": "datos_prueba/PA_2025_Activos.xlsx",
+            "ULTIMA_UPA": "datos_prueba/UPA_anterior.xlsx",
+            "UPA_actual": "datos_prueba/UPA_actual.xlsx",
+            "FDD_CNS_GRALO_FDP_DIAGNOSTICO": "datos_prueba/FDD_CNS_GRALO_FDP_DIAGNOSTICO.xlsx"
+        }
+        for df_name, file_path in excel_files_to_load.items():
+            try:
+                df = pd.read_excel(file_path)
+                setattr(self, df_name, df)
+                self.console.print(f"[green]OK: Archivo Excel '{file_path}' cargado en '{df_name}'. Shape: {df.shape}[/green]")
+            except Exception as e:
+                self.console.print(f"[red]Error cargando el archivo Excel '{file_path}': {e}[/red]")
+                setattr(self, df_name, pd.DataFrame())
+
+        # Aplicar el mismo post-procesamiento que en la sección 1
+        self.console.rule("[bold blue]Aplicando post-procesamiento a los datos cargados[/bold blue]")
+        # Este bloque es una réplica del post-procesamiento de run_section_1_load_excel_data
+        # Se podría refactorizar a una función común si se desea.
+        try:
+            # Procesamiento de DataFrames cargados (similar a la sección 1)
+            if not self.PA_2025_Activos.empty and 'Area de Reserva' in self.PA_2025_Activos.columns:
+                self.PA_2025_Activos['Area de Reserva'] = self.PA_2025_Activos['Area de Reserva'].astype(str).str.upper()
+        
+            if not self.UPS_FT_PROY_CONSULTA_ACTIVIDAD.empty:
+                if 'Operacion_Name' in self.UPS_FT_PROY_CONSULTA_ACTIVIDAD.columns:
+                    self.UPS_FT_PROY_CONSULTA_ACTIVIDAD['Operacion_Name'] = self.UPS_FT_PROY_CONSULTA_ACTIVIDAD['Operacion_Name'].astype(str).str.replace('NOC - ', '', regex=False)
+                if 'Area_Reserva_Name' in self.UPS_FT_PROY_CONSULTA_ACTIVIDAD.columns:
+                    self.UPS_FT_PROY_CONSULTA_ACTIVIDAD['Area_Reserva_Name'] = self.UPS_FT_PROY_CONSULTA_ACTIVIDAD['Area_Reserva_Name'].astype(str).str.replace('LOMA LA LATA NORTE', 'LOMA CAMPANA', regex=False)
+
+            if not self.FDD_CNS_NOC_OW_INSTALACIONES.empty and 'FECHA_INSTALACION' in self.FDD_CNS_NOC_OW_INSTALACIONES.columns:
+                self.FDD_CNS_NOC_OW_INSTALACIONES['FECHA_INSTALACION'] = pd.to_datetime(self.FDD_CNS_NOC_OW_INSTALACIONES['FECHA_INSTALACION'], errors='coerce')
+                self.FDD_CNS_NOC_OW_INSTALACIONES = self.FDD_CNS_NOC_OW_INSTALACIONES.sort_values('FECHA_INSTALACION', ascending=False).reset_index(drop=True)
+                if 'NOMBRE_POZO' in self.FDD_CNS_NOC_OW_INSTALACIONES.columns:
+                    self.FDD_CNS_NOC_OW_INSTALACIONES_ultimos = self.FDD_CNS_NOC_OW_INSTALACIONES.sort_values('FECHA_INSTALACION').groupby('NOMBRE_POZO').last().reset_index()
+
+            if not self.UPS_FT_CABEZA_POZO.empty and 'Boca_Pozo_Nombre_Oficial' in self.UPS_FT_CABEZA_POZO.columns:
+                self.UPS_FT_CABEZA_POZO['Nombre_Boca_Pozo_Oficial'] = self.UPS_FT_CABEZA_POZO['Boca_Pozo_Nombre_Oficial'].astype(str).str.replace('YPF.Nq.', '', regex=False)
+                if 'NOMBRE_COMP' in self.UPS_FT_CABEZA_POZO.columns:
+                    self.UPS_FT_CABEZA_POZO_filtrado = self.UPS_FT_CABEZA_POZO[self.UPS_FT_CABEZA_POZO['NOMBRE_COMP'].astype(str).str.contains('ROD LOCK BOP', na=False)]
+
+            if not self.GIDI_POZO.empty and not self.UPS_FT_CABEZA_POZO_filtrado.empty:
+                self.GIDI_POZO['Inicio Fractura'] = pd.to_datetime(self.GIDI_POZO['Inicio Fractura'], errors='coerce')
+                self.actividad_aseguramiento = self.GIDI_POZO[
+                    (self.GIDI_POZO['SE actual'] == 'Bombeo Mecánico') & 
+                    (self.GIDI_POZO['Tipo Aseg IP'] == 'AD') & 
+                    (~self.GIDI_POZO['padre'].isin(self.UPS_FT_CABEZA_POZO_filtrado['Nombre_Boca_Pozo_Oficial']))
+                ][['padre', 'Inicio Fractura', 'Zona']].copy()
+                if not self.actividad_aseguramiento.empty:
+                    self.actividad_aseguramiento['Fecha Aseg'] = self.actividad_aseguramiento['Inicio Fractura'].apply(lambda x: x - pd.DateOffset(months=1) if pd.notna(x) else pd.NaT)
+
+            if not self.GIDI_POZO.empty:
+                def calcular_meses_desplazados_gidi(mpe_rem):
+                    if pd.isna(mpe_rem): return None
+                    if mpe_rem <= 100: return 1
+                    elif 100 < mpe_rem <= 250: return 2
+                    elif 250 < mpe_rem <= 400: return 3
+                    elif mpe_rem > 400: return 4
+                    return None
+                self.GIDI_POZO['Meses_Desplazados'] = self.GIDI_POZO['MPE_rem'].apply(calcular_meses_desplazados_gidi)
+                self.GIDI_POZO['Inicio Fractura'] = pd.to_datetime(self.GIDI_POZO['Inicio Fractura'], errors='coerce')
+                self.GIDI_POZO['fecha_interferencia'] = self.GIDI_POZO['Inicio Fractura'].dt.to_period('M').dt.start_time
+            
+            if not self.ULTIMA_UPA.empty:
+                self.ULTIMA_UPA['FECHA'] = pd.to_datetime(self.ULTIMA_UPA['FECHA'], errors='coerce')
+                if 'NOMBRE POZO' in self.ULTIMA_UPA.columns:
+                    self.ULTIMA_UPA['NOMBRE POZO'] = self.ULTIMA_UPA['NOMBRE POZO'].astype(str).str.replace('YPF.Nq.', '', regex=False)
+
+            if not self.UPA_actual.empty:
+                self.UPA_actual['FECHA'] = pd.to_datetime(self.UPA_actual['FECHA'], errors='coerce')
+                if 'NOMBRE POZO' in self.UPA_actual.columns:
+                    self.UPA_actual['NOMBRE POZO'] = self.UPA_actual['NOMBRE POZO'].astype(str).str.replace('YPF.Nq.', '', regex=False)
+
+            if not self.UPS_DIM_COMPLETACION.empty:
+                self.UPS_DIM_COMPLETACION['Fecha_Inicio_Produccion_Dt'] = pd.to_datetime(self.UPS_DIM_COMPLETACION['Fecha_Inicio_Produccion_Dt'], errors='coerce')
+                self.UPS_DIM_COMPLETACION['Campana'] = self.UPS_DIM_COMPLETACION['Fecha_Inicio_Produccion_Dt'].dt.year
+                self.UPS_DIM_COMPLETACION = self.UPS_DIM_COMPLETACION[self.UPS_DIM_COMPLETACION['Campana'] > 2016]
+
+            if not self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.empty:
+                if 'FECHA_DIAGNOSTICO' in self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.columns:
+                    self.FDD_CNS_GRALO_FDP_DIAGNOSTICO['FECHA_DIAGNOSTICO'] = pd.to_datetime(self.FDD_CNS_GRALO_FDP_DIAGNOSTICO['FECHA_DIAGNOSTICO'], errors='coerce')
+                if 'NOMBRE_CORTO_POZO' in self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.columns:
+                    self.FDD_CNS_GRALO_FDP_DIAGNOSTICO['NOMBRE_CORTO_POZO'] = self.FDD_CNS_GRALO_FDP_DIAGNOSTICO['NOMBRE_CORTO_POZO'].astype(str).str.replace('YPF.Nq.', '', regex=False)
+                    self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos = self.FDD_CNS_GRALO_FDP_DIAGNOSTICO.sort_values('FECHA_DIAGNOSTICO').groupby('NOMBRE_CORTO_POZO').last().reset_index()
+            
+            self.console.print("[green]Post-procesamiento completado.[/green]")
+            # self.console.print("[green]Selección de columnas completada.[/green]")
 
 
     def _save_df_to_parquet(self, df, file_name_stem, dataframes_to_save_dict): # Pass dict for safety
@@ -903,7 +965,7 @@ class UPAWorkflow:
                 if isinstance(attr_value, pd.DataFrame):
                     if not attr_value.empty:
                         cols_preview = attr_value.columns.tolist()
-                        cols_display = f"{cols_preview[:5]}..." if len(cols_preview) > 5 else cols_preview
+                        cols_display = f"{cols_preview[:5]}..." if len(cols_preview) >  5 else cols_preview
                         val_repr = f"DataFrame (Shape: {attr_value.shape}, Columnas: {cols_display}) - Ver detalles abajo"
                         dataframes_to_print_details[attr_name] = attr_value # Guardar para imprimir después
                     else:
@@ -1102,6 +1164,8 @@ class UPAWorkflow:
             pd.DataFrame(upa_con_limite_list).to_excel('Resultados/UPA_limitada_recursos_resumen.xlsx', index=False)
             self.df_upa_con_limite.to_excel('Resultados/UPA_limitada_recursos_detalle_pozos.xlsx', index=False)
             self.console.print("[green]Exportado 'UPA_limitada_recursos_resumen.xlsx' y detalle.[/green]")
+        except Exception as e:
+            self.console.print(f"[red]Error exportando planes UPA: {e}[/red]")
         except Exception as e:
             self.console.print(f"[red]Error exportando planes UPA: {e}[/red]")
 
@@ -1403,7 +1467,7 @@ class UPAWorkflow:
         except Exception as e:
             self.console.print(f"[red]Error exportando pérdidas por cierre UPA: {e}[/red]")
 
-        self.console.print("[green]Sección 8: Cálculo de Pérdidas por Cierre UPA completado.[/green]")
+        self.console.print("[green]Sección 8: Cálculo de Pérdidas por Cierre UPA completada.[/green]")
 
 
     def run_section_show_upa_monthly_report(self):
@@ -1597,6 +1661,7 @@ def main_menu():
 
     menu_actions = {
         "1": workflow.run_section_1_load_excel_data,
+        "1B": workflow.run_section_1b_load_from_database, # Nueva opción
         "2": workflow.run_section_2_save_to_parquet,
         "3": workflow.run_section_3_load_from_parquet,
         "A": workflow.run_section_show_parquet_df_info, # Nueva opción
@@ -1615,7 +1680,8 @@ def main_menu():
         table.add_column("Opción", style="dim", width=6)
         table.add_column("Descripción")
 
-        table.add_row("1", "Cargar y Procesar Datos desde Excel")
+        table.add_row("1", "Cargar y Procesar Datos desde [bold yellow]Excel[/bold yellow]")
+        table.add_row("1B", "Cargar y Procesar Datos desde [bold green]Bases de Datos[/bold green] (CNS/Teradata)")
         table.add_row("2", "Guardar DataFrames a Parquet")
         table.add_row("3", "Cargar DataFrames desde Parquet")
         table.add_row("A", "Mostrar Información de DataFrames Parquet Cargados")
@@ -1627,17 +1693,33 @@ def main_menu():
         table.add_row("7", "Calcular Pérdidas EDT")
         table.add_row("8", "Calcular Pérdidas por Cierre UPA")
         table.add_row("9", "Ejecutar Todas las Secciones (1-8, excluye A, B, C)")
+        table.add_row("9B", "Ejecutar Todas las Secciones desde [bold green]BD[/bold green] (1B, 2-8, excluye A, B, C)")
         table.add_row("0", "Salir")
         
         console.print(table)
-        choice = Prompt.ask("Seleccione una opción", choices=list(menu_actions.keys()) + ["9", "0"], default="0")
+        choice = Prompt.ask("Seleccione una opción", choices=list(menu_actions.keys()) + ["9", "9B", "0"], default="0")
         if choice == "0":
             console.print("[bold yellow]Saliendo del programa.[/bold yellow]")
             break
         elif choice == "9":
-            console.print("[bold yellow]Ejecutando todas las secciones secuencialmente...[/bold yellow]")
+            console.print("[bold yellow]Ejecutando todas las secciones secuencialmente (desde Excel)...[/bold yellow]")
             # Ejecuta secciones 1-3 y luego 4-8
             sections_to_run = ["1", "2", "3", "4", "5", "6", "7", "8"]
+            for section_key in sections_to_run:
+                action = menu_actions.get(section_key)
+                if action:
+                    try:
+                        console.print(f"[bold blue]Ejecutando Sección {section_key}...[/bold blue]")
+                        action()
+                    except Exception as e:
+                        console.print(f"[bold red]Error en la sección {section_key}: {e}[/bold red]")
+                        console.print_exception(show_locals=True)
+                        break 
+            console.print("[bold green]Todas las secciones ejecutadas (o detenidas por error).[/bold green]")
+        elif choice == "9B":
+            console.print("[bold yellow]Ejecutando todas las secciones secuencialmente (desde Bases de Datos)...[/bold yellow]")
+            # Ejecuta secciones 1B, 2-3 y luego 4-8
+            sections_to_run = ["1B", "2", "3", "4", "5", "6", "7", "8"]
             for section_key in sections_to_run:
                 action = menu_actions.get(section_key)
                 if action:

@@ -1,3 +1,8 @@
+import sys
+import os
+
+
+
 import pandas as pd
 import numpy as np
 import datetime # Use 'import datetime'
@@ -13,6 +18,7 @@ from rich.table import Table
 
 import cx_Oracle
 import teradatasql
+from sqlalchemy import create_engine # Añadir esta importación
 
 # import teradatasql # Kept commented as in original
 
@@ -454,23 +460,23 @@ class UPAWorkflow:
         return file_path, df  # Return the original file_path and the DataFrame
 
     def run_section_1_load_excel_data(self):
-            self.console.rule("[bold blue]1. Carga y Procesamiento Inicial de Datos Excel[/bold blue]")
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    columns_to_read_config = {
-                        "datos_prueba/UPS_DIM_COMPLETACION.xlsx": ['Completacion_Nombre_Corto', 'Metodo_Produccion_Actual_Cd', 'Bloque_Monitoreo_Nombre', 'Fecha_Inicio_Produccion_Dt'],
-                        "datos_prueba/CNS_NOC_PI.xlsx": ['NOMBRE_CORTO_POZO', 'FECHA', 'PRESION_CABEZA', 'PRESION_LINEA'],
-                        "datos_prueba/CNS_NOC_TOW_CONTROLES.xlsx": ['NOMBRE_CORTO_POZO', 'TEST_DT', 'TEST_PURP_CD', 'BRUTA', 'CHOKE_SIZE','PROD_OIL_24'],
-                        "datos_prueba/CNS_NOC_TOW_PAR_PERD.xlsx": ['NOMBRE_CORTO_POZO', 'PROD_DT', 'HORAS_DE_PARO', 'RUBRO', 'GRAN_RUBRO','PERDIDA_PETROLEO'],
-                        "datos_prueba/NOC_G&R_PERFIL_UPA_DECLINO.xlsx": ['POZO', 'FECHA', 'BRUTA_(m3/DC)', 'PETRÓLEO_(m3/DC)', 'AGUA_(m3/DC)'], # Added AGUA
-                        "datos_prueba/GIDI_POZO.xlsx": ['padre', 'Inicio Fractura', 'SE actual', 'Tipo Aseg IP', 'Zona', 'MPE_rem','Meses_Desplazados'], # Added Meses_Desplazados if it's read directly
-                        "datos_prueba/PA_2025_Activos.xlsx": ['Area de Reserva'],
-                        "datos_prueba/UPS_FT_PROY_CONSULTA_ACTIVIDAD.xlsx": ['Sigla_Pozo_Cd', 'Fecha_Inicio_Dttm', 'Operacion_Name', 'Area_Reserva_Name'],
-                        "datos_prueba/FDD_CNS_NOC_OW_INSTALACIONES.xlsx": ['NOMBRE_POZO', 'COMPONENTE', 'FECHA_INSTALACION'],
-                        "datos_prueba/UPS_FT_CABEZA_POZO.xlsx": ['Boca_Pozo_Nombre_Oficial', 'NOMBRE_COMP', 'FECHA_INSTALACION']
-                    }
-        
+        self.console.rule("[bold blue]1. Carga y Procesamiento Inicial de Datos Excel[/bold blue]")
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                columns_to_read_config = {
+                    "datos_prueba/UPS_DIM_COMPLETACION.xlsx": ['Completacion_Nombre_Corto', 'Metodo_Produccion_Actual_Cd', 'Bloque_Monitoreo_Nombre', 'Fecha_Inicio_Produccion_Dt'],
+                    "datos_prueba/CNS_NOC_PI.xlsx": ['NOMBRE_CORTO_POZO', 'FECHA', 'PRESION_CABEZA', 'PRESION_LINEA'],
+                    "datos_prueba/CNS_NOC_TOW_CONTROLES.xlsx": ['NOMBRE_CORTO_POZO', 'TEST_DT', 'TEST_PURP_CD', 'BRUTA', 'CHOKE_SIZE','PROD_OIL_24'],
+                    "datos_prueba/CNS_NOC_TOW_PAR_PERD.xlsx": ['NOMBRE_CORTO_POZO', 'PROD_DT', 'HORAS_DE_PARO', 'RUBRO', 'GRAN_RUBRO','PERDIDA_PETROLEO'],
+                    "datos_prueba/NOC_G&R_PERFIL_UPA_DECLINO.xlsx": ['POZO', 'FECHA', 'BRUTA_(m3/DC)', 'PETRÓLEO_(m3/DC)', 'AGUA_(m3/DC)'], # Added AGUA
+                    "datos_prueba/GIDI_POZO.xlsx": ['padre', 'Inicio Fractura', 'SE actual', 'Tipo Aseg IP', 'Zona', 'MPE_rem','Meses_Desplazados'], # Added Meses_Desplazados if it's read directly
+                    "datos_prueba/PA_2025_Activos.xlsx": ['Area de Reserva'],
+                    "datos_prueba/UPS_FT_PROY_CONSULTA_ACTIVIDAD.xlsx": ['Sigla_Pozo_Cd', 'Fecha_Inicio_Dttm', 'Operacion_Name', 'Area_Reserva_Name'],
+                    "datos_prueba/FDD_CNS_NOC_OW_INSTALACIONES.xlsx": ['NOMBRE_POZO', 'COMPONENTE', 'FECHA_INSTALACION'],
+                    "datos_prueba/UPS_FT_CABEZA_POZO.xlsx": ['Boca_Pozo_Nombre_Oficial', 'NOMBRE_COMP', 'FECHA_INSTALACION'],
+                    "datos_prueba/Diagnostico_FDD_CNS_GRALO_FDP.xlsx": ['NOMBRE_POZO_CORTO', 'FECHA_DIAGNOSTICO', 'DIAGNOSTICO', 'JUSTIFICACION', 'CLASE', 'ZONA'],
+                }
             file_paths_ordered = [
                 "datos_prueba/UPS_DIM_COMPLETACION.xlsx", "datos_prueba/CNS_NOC_PI.xlsx",
                 "datos_prueba/CNS_NOC_TOW_CONTROLES.xlsx", "datos_prueba/CNS_NOC_TOW_PAR_PERD.xlsx",
@@ -494,23 +500,24 @@ class UPAWorkflow:
                     executor.submit(self._read_and_process_excel, fp, columns_to_read_config): fp 
                     for fp in file_paths_ordered
                 }
-                for future in tqdm(concurrent.futures.as_completed(future_to_filepath), total=len(file_paths_ordered), desc="Procesando archivos Excel"):
-                    original_file_path = future_to_filepath[future] # Obtener el file_path original
-                    try:
-                        processed_file_path, df = future.result() # _read_and_process_excel ahora devuelve (file_path, df)
-                        # Asegurarse de que el processed_file_path coincida con el original_file_path
-                        if original_file_path == processed_file_path:
-                            attr_name = file_path_to_attr_name_map[original_file_path]
-                            setattr(self, attr_name, df)
-                        else:
-                            # Esto no debería suceder si _read_and_process_excel devuelve el mismo file_path que recibió
-                            self.console.print(f"[red]Error de coincidencia de file_path: {original_file_path} vs {processed_file_path}[/red]")
-                    except Exception as exc:
-                        self.console.print(f"[red]Error procesando {original_file_path}: {exc}[/red]")
-                        # Asignar un DataFrame vacío al atributo correspondiente para evitar errores posteriores
-                        attr_name = file_path_to_attr_name_map.get(original_file_path)
-                        if attr_name:
-                            setattr(self, attr_name, pd.DataFrame())
+
+            for future in tqdm(concurrent.futures.as_completed(future_to_filepath), total=len(file_paths_ordered), desc="Procesando archivos Excel"):
+                original_file_path = future_to_filepath[future] # Obtener el file_path original
+                try:
+                    processed_file_path, df = future.result() # _read_and_process_excel ahora devuelve (file_path, df)
+                    # Asegurarse de que el processed_file_path coincida con el original_file_path
+                    if original_file_path == processed_file_path:
+                        attr_name = file_path_to_attr_name_map[original_file_path]
+                        setattr(self, attr_name, df)
+                    else:
+                        # Esto no debería suceder si _read_and_process_excel devuelve el mismo file_path que recibió
+                        self.console.print(f"[red]Error de coincidencia de file_path: {original_file_path} vs {processed_file_path}[/red]")
+                except Exception as exc:
+                    self.console.print(f"[red]Error procesando {original_file_path}: {exc}[/red]")
+                    # Asignar un DataFrame vacío al atributo correspondiente para evitar errores posteriores
+                    attr_name = file_path_to_attr_name_map.get(original_file_path)
+                    if attr_name:
+                        setattr(self, attr_name, pd.DataFrame())
 
             # Additional processing for specific dataframes
             if not self.PA_2025_Activos.empty and 'Area de Reserva' in self.PA_2025_Activos.columns:
@@ -527,7 +534,6 @@ class UPAWorkflow:
                 self.FDD_CNS_NOC_OW_INSTALACIONES = self.FDD_CNS_NOC_OW_INSTALACIONES.sort_values('FECHA_INSTALACION', ascending=False).reset_index(drop=True)
                 if 'NOMBRE_POZO' in self.FDD_CNS_NOC_OW_INSTALACIONES.columns:
                     self.FDD_CNS_NOC_OW_INSTALACIONES_ultimos = self.FDD_CNS_NOC_OW_INSTALACIONES.sort_values('FECHA_INSTALACION').groupby('NOMBRE_POZO').last().reset_index()
-
 
             if not self.UPS_FT_CABEZA_POZO.empty and 'Boca_Pozo_Nombre_Oficial' in self.UPS_FT_CABEZA_POZO.columns:
                 self.UPS_FT_CABEZA_POZO['Nombre_Boca_Pozo_Oficial'] = self.UPS_FT_CABEZA_POZO['Boca_Pozo_Nombre_Oficial'].astype(str).str.replace('YPF.Nq.', '', regex=False)
@@ -581,80 +587,106 @@ class UPAWorkflow:
             self.console.print("[green]Post-procesamiento completado.[/green]")
             # self.console.print("[green]Selección de columnas completada.[/green]")
 
+        except Exception as e:
+            self.console.print(f"[red]Error en la carga y procesamiento de datos Excel: {e}[/red]")
+
 
     def run_section_1b_load_from_database(self):
         self.console.rule("[bold blue]1B. Carga y Procesamiento Inicial desde Bases de Datos[/bold blue]")
         
-        # Configuración de columnas a leer (reutilizada de la carga de Excel)
-        columns_to_read_config = {
-            "UPS_DIM_COMPLETACION": ['Completacion_Nombre_Corto', 'Metodo_Produccion_Actual_Cd', 'Bloque_Monitoreo_Nombre', 'Fecha_Inicio_Produccion_Dt'],
-            "CNS_NOC_PI": ['NOMBRE_CORTO_POZO', 'FECHA', 'PRESION_CABEZA', 'PRESION_LINEA'],
-            "CNS_NOC_TOW_CONTROLES": ['NOMBRE_CORTO_POZO', 'TEST_DT', 'TEST_PURP_CD', 'BRUTA', 'CHOKE_SIZE','PROD_OIL_24'],
-            "CNS_NOC_TOW_PAR_PERD": ['NOMBRE_CORTO_POZO', 'PROD_DT', 'HORAS_DE_PARO', 'RUBRO', 'GRAN_RUBRO','PERDIDA_PETROLEO'],
-            "NOC_GR_PERFIL_UPA_DECLINO": ['POZO', 'FECHA', 'BRUTA_(m3/DC)', 'PETRÓLEO_(m3/DC)', 'AGUA_(m3/DC)'],
-            "UPS_FT_PROY_CONSULTA_ACTIVIDAD": ['Sigla_Pozo_Cd', 'Fecha_Inicio_Dttm', 'Operacion_Name', 'Area_Reserva_Name'],
-            "FDD_CNS_NOC_OW_INSTALACIONES": ['NOMBRE_POZO', 'COMPONENTE', 'FECHA_INSTALACION'],
-            "UPS_FT_CABEZA_POZO": ['Boca_Pozo_Nombre_Oficial', 'NOMBRE_COMP', 'FECHA_INSTALACION']
-        }
+        try: # Inicia el bloque try principal para toda la función
+            # Configuración de columnas a leer (reutilizada de la carga de Excel)
+            columns_to_read_config = {
+                "UPS_DIM_COMPLETACION": ['Completacion_Nombre_Corto', 'Metodo_Produccion_Actual_Cd', 'Bloque_Monitoreo_Nombre', 'Fecha_Inicio_Produccion_Dt'],
+                "UPS_FT_DLY_SENSORES_PRESIONES_POZOS": ['Boca_Pozo_Nombre_Oficial', 'Fecha_Hora_Dttm', 'Presion_Cabeza_Pozo_Num', 'Presion_Linea_Produccion_Num'],
+                "CNS_NOC_TOW_CONTROLES": ['NOMBRE_CORTO_POZO', 'TEST_DT', 'TEST_PURP_CD', 'BRUTA', 'CHOKE_SIZE','PROD_OIL_24'],
+                "CNS_NOC_TOW_PAR_PERD": ['NOMBRE_CORTO_POZO', 'PROD_DT', 'HORAS_DE_PARO', 'RUBRO', 'GRAN_RUBRO','PERDIDA_PETROLEO'],
+                "NOC_GR_PERFIL_UPA_DECLINO": ['POZO', 'FECHA', 'BRUTA_(m3/DC)', 'PETRÓLEO_(m3/DC)', 'AGUA_(m3/DC)'],
+                "UPS_FT_PROY_CONSULTA_ACTIVIDAD": ['Sigla_Pozo_Cd', 'Fecha_Inicio_Dttm', 'Operacion_Name', 'Area_Reserva_Name'],
+                "CNS_NOC_OW_INSTALACIONES": ['NOMBRE_POZO', 'COMPONENTE', 'FECHA_INSTALACION'],
+                "UPS_FT_CABEZA_POZO": ['Boca_Pozo_Nombre_Oficial', 'NOMBRE_COMP', 'FECHA_INSTALACION'],
+                #"FDD_CNS_GRALO_FDP_DIAGNOSTICO": ['NOMBRE_CORTO_POZO', 'FECHA_DIAGNOSTICO', 'DIAGNOSTICO', 'JUSTIFICACION', 'CLASE', 'ZONA']
+            }
 
-        # Mapeo de nombres de DataFrame a nombres de tabla y base de datos
-        db_map = {
-            'UPS_DIM_COMPLETACION': 'teradata', 'CNS_NOC_PI': 'cns',
-            'CNS_NOC_TOW_CONTROLES': 'cns', 'CNS_NOC_TOW_PAR_PERD': 'cns',
-            'NOC_GR_PERFIL_UPA_DECLINO': 'cns', # Asumiendo que NOC es de CNS
-            'UPS_FT_PROY_CONSULTA_ACTIVIDAD': 'teradata',
-            'FDD_CNS_NOC_OW_INSTALACIONES': 'cns', # Asumiendo que FDD_CNS es de CNS
-            'UPS_FT_CABEZA_POZO': 'teradata'
-        }
+            # Mapeo de nombres de DataFrame a nombres de tabla y base de datos
+            db_map = {
+                'UPS_DIM_COMPLETACION': 'teradata', 
+                'UPS_FT_PROY_CONSULTA_ACTIVIDAD': 'teradata',
+                'UPS_FT_CABEZA_POZO': 'teradata',
+                'UPS_FT_DLY_SENSORES_PRESIONES_POZOS': 'teradata',
+                'CNS_NOC_TOW_CONTROLES': 'cns', 'CNS_NOC_TOW_PAR_PERD': 'cns',
+#                'NOC_GR_PERFIL_UPA_DECLINO': 'cns', # Asumiendo que NOC es de CNS
+                'CNS_NOC_OW_INSTALACIONES': 'cns', # Asumiendo que FDD_CNS es de CNS
+                #'FDD_CNS_GRALO_FDP_DIAGNOSTICO': 'cns' # Asumiendo que FDD_CNS es de CNS
+            }
 
-        # Generar y ejecutar consultas
-        for df_name, db_type in tqdm(db_map.items(), desc="Consultando bases de datos"):
-            try:
-                columns_list = columns_to_read_config[df_name.replace('.xlsx', '')]
-                columns_str = ", ".join(f'"{col}"' for col in columns_list) # Usar comillas por si hay mayúsculas/minúsculas
-                
-                df = pd.DataFrame()
-                if db_type == 'cns':
-                    table_name = f"SAHARA.{df_name}"
-                    query = f"SELECT {columns_str} FROM {table_name}"
-                    self.console.print(f"\n[cyan]Ejecutando en CNS:[/cyan] {query}")
-                    df = conectarse_cns(query)
-                elif db_type == 'teradata':
-                    table_name = f"P_DIM_V.{df_name}"
-                    query = f"SELECT {columns_str} FROM {table_name}"
-                    self.console.print(f"\n[cyan]Ejecutando en Teradata:[/cyan] {query}")
-                    df = conectarse_teradata(query)
-                
-                setattr(self, df_name, df)
-                self.console.print(f"[green]OK: DataFrame '{df_name}' cargado desde {db_type.upper()}. Shape: {df.shape}[/green]")
+            # Generar y ejecutar consultas
+            for df_name, db_type in tqdm(db_map.items(), desc="Consultando bases de datos"):
+                try:
+                    columns_list = columns_to_read_config[df_name.replace('.xlsx', '')]
+                    columns_str = ", ".join(f'"{col}"' for col in columns_list) # Usar comillas por si hay mayúsculas/minúsculas
+                    
+                    # --- LÓGICA DE CONSULTA OPTIMIZADA ---
+                    if df_name == 'UPS_FT_DLY_SENSORES_PRESIONES_POZOS' and db_type == 'teradata':
+                        # Usar la consulta optimizada específica para esta tabla grande
+                        table_name = f"P_DIM_V.{df_name}"
+                        query = f"SELECT {columns_str} FROM {table_name} WHERE Servidor_Name = 'NOC' AND Fecha_Hora_Dttm > '2025-06-28 00:00:00'"
+                        
+                        self.console.print(f"\n[cyan]Ejecutando en Teradata (Consulta Optimizada):[/cyan] {query}")
+                        self.console.print("[yellow]Iniciando la descarga de datos desde Teradata... Esto puede tardar varios minutos. Se mostrará el progreso por bloques.[/yellow]")
+                        start_time = time.time()
+                        
+                        # Llamar a la función de conexión con un chunksize para obtener retroalimentación
+                        df = conectarse_teradata(query, chunksize=50000) # Pedirá datos en bloques de 50,000 filas
+                        
+                        end_time = time.time()
+                        self.console.print(f"\n[green]Descarga de '{df_name}' completada en {end_time - start_time:.2f} segundos.[/green]")
+                    else:
+                        # Lógica general para las demás tablas
+                        if db_type == 'cns':
+                            table_name = f"SAHARA.{df_name}"
+                            query = f"SELECT {columns_str} FROM {table_name}"
+                            self.console.print(f"\n[cyan]Ejecutando en CNS:[/cyan] {query}")
+                            df = conectarse_cns(query)
+                        elif db_type == 'teradata':
+                            table_name = f"P_DIM_V.{df_name}"
+                            query = f"SELECT {columns_str} FROM {table_name}"
+                            self.console.print(f"\n[cyan]Ejecutando en Teradata:[/cyan] {query}")
+                            df = conectarse_teradata(query)
+                    
+                    setattr(self, df_name, df)
+                    self.console.print(f"[green]OK: DataFrame '{df_name}' cargado desde {db_type.upper()}. Shape: {df.shape}[/green]")
 
-            except Exception as e:
-                self.console.print(f"[red]Error al cargar '{df_name}' desde la base de datos: {e}[/red]")
-                setattr(self, df_name, pd.DataFrame()) # Asignar DF vacío en caso de error
+                except Exception as e:
+                    self.console.print(f"[red]Error al cargar '{df_name}' desde la base de datos: {e}[/red]")
+                    setattr(self, df_name, pd.DataFrame()) # Asignar DF vacío en caso de error
 
-        # Cargar los excels restantes que no se consultan a la BD
-        self.console.rule("[bold blue]Cargando archivos Excel restantes[/bold blue]")
-        excel_files_to_load = {
-            "GIDI_POZO": "datos_prueba/GIDI_POZO.xlsx",
-            "PA_2025_Activos": "datos_prueba/PA_2025_Activos.xlsx",
-            "ULTIMA_UPA": "datos_prueba/UPA_anterior.xlsx",
-            "UPA_actual": "datos_prueba/UPA_actual.xlsx",
-            "FDD_CNS_GRALO_FDP_DIAGNOSTICO": "datos_prueba/FDD_CNS_GRALO_FDP_DIAGNOSTICO.xlsx"
-        }
-        for df_name, file_path in excel_files_to_load.items():
-            try:
-                df = pd.read_excel(file_path)
-                setattr(self, df_name, df)
-                self.console.print(f"[green]OK: Archivo Excel '{file_path}' cargado en '{df_name}'. Shape: {df.shape}[/green]")
-            except Exception as e:
-                self.console.print(f"[red]Error cargando el archivo Excel '{file_path}': {e}[/red]")
-                setattr(self, df_name, pd.DataFrame())
+            # Cargar los excels restantes que no se consultan a la BD
+            self.console.rule("[bold blue]Cargando archivos Excel restantes[/bold blue]")
+            excel_files_to_load = {
+                "GIDI_POZO": "datos_prueba/GIDI_POZO.xlsx",
 
-        # Aplicar el mismo post-procesamiento que en la sección 1
-        self.console.rule("[bold blue]Aplicando post-procesamiento a los datos cargados[/bold blue]")
-        # Este bloque es una réplica del post-procesamiento de run_section_1_load_excel_data
-        # Se podría refactorizar a una función común si se desea.
-        try:
+                "NOC_G&R_PERFIL_UPA_DECLINO": "datos_prueba/NOC_G&R_PERFIL_UPA_DECLINO.xlsx", # Added AGUA
+                "PA_2025_Activos": "datos_prueba/PA_2025_Activos.xlsx",
+                "ULTIMA_UPA": "datos_prueba/UPA_anterior.xlsx",
+                "UPA_actual": "datos_prueba/UPA_actual.xlsx",
+                "FDD_CNS_GRALO_FDP_DIAGNOSTICO" : "datos_prueba/FDD_CNS_GRALO_FDP_DIAGNOSTICO.xlsx"
+            }
+ 
+            for df_name, file_path in tqdm(excel_files_to_load.items(), desc="Cargando Excels restantes"):
+                try:
+                    df = pd.read_excel(file_path)
+                    setattr(self, df_name, df)
+                    # self.console.print(f"[green]OK: Archivo Excel '{file_path}' cargado en '{df_name}'. Shape: {df.shape}[/green]") # Comentado
+                except Exception as e:
+                    self.console.print(f"\n[red]Error cargando el archivo Excel '{file_path}': {e}[/red]") # \n para nueva línea
+                    setattr(self, df_name, pd.DataFrame())
+
+            # Aplicar el mismo post-procesamiento que en la sección 1
+            self.console.rule("[bold blue]Aplicando post-procesamiento a los datos cargados[/bold blue]")
+            # Este bloque es una réplica del post-procesamiento de run_section_1_load_excel_data
+            # Se podría refactorizar a una función común si se desea.
+            
             # Procesamiento de DataFrames cargados (similar a la sección 1)
             if not self.PA_2025_Activos.empty and 'Area de Reserva' in self.PA_2025_Activos.columns:
                 self.PA_2025_Activos['Area de Reserva'] = self.PA_2025_Activos['Area de Reserva'].astype(str).str.upper()
@@ -722,6 +754,9 @@ class UPAWorkflow:
             
             self.console.print("[green]Post-procesamiento completado.[/green]")
             # self.console.print("[green]Selección de columnas completada.[/green]")
+        
+        except Exception as e: # Captura cualquier error en la función
+            self.console.print(f"[bold red]Error en run_section_1b_load_from_database: {e}[/bold red]")
 
 
     def _save_df_to_parquet(self, df, file_name_stem, dataframes_to_save_dict): # Pass dict for safety
@@ -1166,8 +1201,6 @@ class UPAWorkflow:
             self.console.print("[green]Exportado 'UPA_limitada_recursos_resumen.xlsx' y detalle.[/green]")
         except Exception as e:
             self.console.print(f"[red]Error exportando planes UPA: {e}[/red]")
-        except Exception as e:
-            self.console.print(f"[red]Error exportando planes UPA: {e}[/red]")
 
         self.console.print("[green]Sección 5: Creación de Planes UPA completada.[/green]")
 
@@ -1585,74 +1618,70 @@ class UPAWorkflow:
         self.console.print("\n[green]Reporte mensual de planes UPA completado.[/green]")
 
 def conectarse_cns(query):
-    
-    user_id = 'sahara'    
-    user_password = 'sahara'
-    
-    server = 'SLPBUETBORA15'    
-    port = 1527    
-    sid = "PSSH" 
-    
-    # Crea el DSN (Data Source Name) para la conexión
-    dsn_tns = cx_Oracle.makedsn(server, port, sid)
-    
-    # Crea el motor de SQLAlchemy
-    engine = create_engine(f'oracle+cx_oracle://{user_id}:{user_password}@{dsn_tns}')
-    
-    # Usa el motor de SQLAlchemy con pandas
-    df = pd.read_sql(query, engine)
-    
-    try:    
-        df['start_month'] = df['FECHA'].astype('str').str.slice(0,7)
-        df['FECHA'] = pd.to_datetime(df['FECHA']) # Usar pd.to_datetime es más robusto
-        df['days_moth'] = df["FECHA"].dt.daysinmonth
-        df["month"] = df["FECHA"].dt.month
-        df["year"] = df["FECHA"].dt.year
-        df.loc[df['start_month'] == max(df['start_month']), 'days_moth'] = max(df['FECHA']).day
-
-    except KeyError: # Es más específico capturar el error esperado
-         print("Error: La columna 'FECHA' no se encontró en los resultados de la consulta.")
-    except Exception as e:
-         print(f"Ocurrió un error inesperado: {e}")
+    """
+    Se conecta a Oracle CNS, ejecuta la consulta y devuelve un DataFrame.
+    """
+    try:
+        user_id = 'sahara'    
+        user_password = 'sahara'
+        server = 'SLPBUETBORA15'    
+        port = 1527    
+        sid = "PSSH" 
         
-    print(df.head())
-    return df
+        dsn_tns = cx_Oracle.makedsn(server, port, sid)
+        connection=cx_Oracle.connect(user=user_id, password=user_password, dsn=dsn_tns)
+        
+        df = pd.read_sql(query, connection)
+        return df
+    except Exception as e:
+        print(f"Error en conectarse_cns: {e}")
+        return pd.DataFrame() # Devuelve un DataFrame vacío en caso de error
 
-def conectarse_teradata(query):
-    dict_conection = {'host':'tdprod'
-                    ,'database':'p_dim_v'
-                    ,'logmech' : 'LDAP'
-                    ,'user': 'ry32287'#os.getenv('Usuario')
-                    ,'password': '4theEmperor!!' #os.getenv('Contraseña')
-                    ,'DBS_PORT':1025}
- 
- 
-    conexion = teradatasql.connect(**dict_conection)
-
-
-    # Se corrigió la consulta para manejar casos donde el delimitador '[' no existe, usando CASE.
-
-    df_nombres = ['Metodo_Produccion','Tipo_Pozo','Clase_Pozo','Tipo_Completacion']
-    dfs = {}
-    sql_querys = [query]
-    # Esta consullta sirve para saber por que batería se produce cada pozo 
-    # sql_query5= f"Select  * from UPS_DIM_JERARQUIA_PRODUCCION WHERE {string_consulta}"
-
-    # UPS_DIM_TIPO_POZO
-
- 
-    ## CREAR UN CURSOR Y EJECUTAR LA CONSULTA SQL
- 
-    cursor = conexion.cursor()
-    for i, query in enumerate(sql_querys):
-        cursor.execute(query)
-        columnas = [desc[0] for desc in cursor.description]
-        resultados = cursor.fetchall()
-        df = pd.DataFrame(resultados, columns=columnas)
-        dfs[df_nombres[i]] = df
-    print("DataFrames creados exitosamente.")
-    print(dfs)
-    return dfs
+def conectarse_teradata(query, chunksize=None):
+    """
+    Se conecta a Teradata. Si se proporciona un chunksize, lee los datos en bloques
+    y muestra el progreso. De lo contrario, lee todo de una vez.
+    """
+    try:
+        dict_conection = {
+            'host': 'tdprod',
+            'logmech': 'LDAP',
+            'user': 'ry32287',
+            'password': '4theEmperor!!'
+        }
+        with teradatasql.connect(**dict_conection) as conexion:
+            if chunksize:
+                # Modo de lectura en bloques con barra de progreso
+                console = Console()
+                console.print("[italic]Modo de lectura en bloques activado.[/italic]")
+                
+                # Usamos un cursor para ejecutar la consulta y obtener los nombres de las columnas
+                cursor = conexion.cursor()
+                cursor.execute(query)
+                columns = [desc[0] for desc in cursor.description]
+                
+                all_chunks = []
+                total_rows = 0
+                
+                # Usamos un bucle para ir pidiendo los bloques de datos
+                with tqdm(desc="Recibiendo filas", unit=" filas") as pbar:
+                    while True:
+                        chunk_data = cursor.fetchmany(chunksize)
+                        if not chunk_data:
+                            break # Se terminaron los datos
+                        all_chunks.extend(chunk_data)
+                        total_rows += len(chunk_data)
+                        pbar.update(len(chunk_data)) # Actualiza la barra de progreso
+                
+                console.print(f"[green]Total de {total_rows} filas recibidas. Creando DataFrame...[/green]")
+                df = pd.DataFrame(all_chunks, columns=columns)
+            else:
+                # Modo de lectura normal (para las consultas rápidas)
+                df = pd.read_sql(query, conexion)
+        return df
+    except Exception as e:
+        print(f"Error en conectarse_teradata: {e}")
+        return pd.DataFrame() # Devuelve un DataFrame vacío en caso de error
 
 
 def main_menu():

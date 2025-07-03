@@ -24,7 +24,7 @@ from sqlalchemy import create_engine # Añadir esta importación
 
 # Define the pozo class at the top level
 class pozo:
-    def __init__(self, nombre, sistema_extraccion, controles, declino, cabeza_de_pozo, instalaciones, fecha_PEM, interferencias, perfil_presiones, downtime,area,fecha_ultima_UPA_data,fecha_UPA_actual_data,diagnostico_data, UPA_actual_df_for_pozo, ULTIMA_UPA_df_for_pozo):
+    def __init__(self, nombre, sistema_extraccion, controles, declino, cabeza_de_pozo, instalaciones, fecha_PEM, interferencias, perfil_presiones, downtime, area, fecha_ultima_UPA_data, fecha_UPA_actual_data, diagnostico_data, UPA_actual_df_for_pozo, ULTIMA_UPA_df_for_pozo):
         self.nombre = nombre
         self.sistema_extraccion = sistema_extraccion
         self.controles = controles
@@ -32,18 +32,18 @@ class pozo:
         self.cabeza_de_pozo = cabeza_de_pozo
         self.instalaciones = instalaciones
         self.fecha_PEM = fecha_PEM
-        self.interferencias = interferencias # This is a DataFrame filtered for the specific pozo
+        self.interferencias = interferencias
         self.perfil_presiones = perfil_presiones
         self.downtime = downtime
         self.area = area
-        self.diagnostico_data = diagnostico_data # This is a DataFrame/Series filtered for the specific pozo
+        self.diagnostico_data = diagnostico_data
 
         self.actividad = None
         self.corte_produccion = None
         self.fecha_capex = None
         self.bruta_declino_inicial = None
         self.interferencias_previas = None
-        self.meses_desplazados = 0 # Initialize
+        self.meses_desplazados = 0
         self.fecha_upa_anterior = None
         self.fecha_crono = None
         self.presion_cabeza_actual = None
@@ -66,7 +66,7 @@ class pozo:
         self.fecha_rodlock= None
         self.asegurado_armadura=None
         self.fecha_UPA_actual= None
-        self.tiempo_cierre_actividad=None # This will be a Series or single value
+        self.tiempo_cierre_actividad=None
         self.actividad_UPA=None
 
         # Process diagnostico
@@ -196,6 +196,7 @@ class pozo:
 
                     if VM_count > 0 and VB_present:
                         self.asegurado_armadura = "Asegurado con Armadura y varillas en pesca"
+        self.calcular_fecha_capex()
 
     def calcular_fecha_capex(self):
         if self.declino.empty or 'BRUTA_(m3/DC)' not in self.declino.columns or self.corte_produccion is None:
@@ -429,8 +430,12 @@ class UPAWorkflow:
             normalized = normalized[len('ypf.nq.'):]
         if normalized.endswith('(h)'):
             normalized = normalized[:-3]
+        # Elimina corchetes y su contenido, por ejemplo [00]a, [01], []
+        normalized = re.sub(r'\[.*?\]', '', normalized)
         # Elimina ceros a la izquierda después del guion (ej: lach-001 -> lach-1)
         normalized = re.sub(r'-(0+)(\d+)', r'-\2', normalized)
+        # Elimina espacios extra que puedan quedar tras quitar corchetes
+        normalized = normalized.strip()
         return normalized
 
     def _read_and_process_excel(self, file_path, columns_to_read_config):
@@ -756,6 +761,15 @@ class UPAWorkflow:
     def _read_df_from_parquet(self, file_name_stem): # file_name_stem does not include .parquet
         try:
             df = pd.read_parquet(f"datos_procesados/{file_name_stem}.parquet")
+            # Si es el DataFrame de completación, asegúrate de que la columna esté presente y renómbrala si es necesario
+            if file_name_stem == "UPS_DIM_COMPLETACION":
+                # Si la columna no existe pero sí existe alguna variante, renómbrala
+                if 'Completacion_Nombre_Corto_Modificado' not in df.columns:
+                    # Buscar alguna variante posible
+                    for col in df.columns:
+                        if "modific" in col.lower():
+                            df.rename(columns={col: 'Completacion_Nombre_Corto_Modificado'}, inplace=True)
+                            break
             return file_name_stem, df
         except Exception as e:
             # self.console.print(f"[red]Error reading {file_name_stem}.parquet: {e}[/red]")
@@ -769,8 +783,7 @@ class UPAWorkflow:
             "UPS_DIM_COMPLETACION", "CNS_NOC_PI", "CNS_NOC_TOW_CONTROLES", "CNS_NOC_TOW_PAR_PERD",
             "NOC_GR_PERFIL_UPA_DECLINO", "GIDI_POZO", "PA_2025_Activos", "UPS_FT_PROY_CONSULTA_ACTIVIDAD",
             "FDD_CNS_NOC_OW_INSTALACIONES", "UPS_FT_CABEZA_POZO_filtrado", "actividad_aseguramiento",
-            "ULTIMA_UPA", "UPA_actual", "FDD_CNS_NOC_OW_INSTALACIONES_ultimos",
-            "FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos" # Added this one
+            "ULTIMA_UPA", "UPA_actual", "FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos"
         ]
 
         # loaded_data = {} # This variable is not used
@@ -810,13 +823,12 @@ class UPAWorkflow:
             "UPS_DIM_COMPLETACION", "CNS_NOC_PI", "CNS_NOC_TOW_CONTROLES", "CNS_NOC_TOW_PAR_PERD",
             "NOC_GR_PERFIL_UPA_DECLINO", "GIDI_POZO", "PA_2025_Activos", "UPS_FT_PROY_CONSULTA_ACTIVIDAD",
             "FDD_CNS_NOC_OW_INSTALACIONES", "UPS_FT_CABEZA_POZO_filtrado", "actividad_aseguramiento",
-            "ULTIMA_UPA", "UPA_actual", "FDD_CNS_NOC_OW_INSTALACIONES_ultimos",
-            "FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos"
+            "ULTIMA_UPA", "UPA_actual", "FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos"
         ]
 
         for df_name in df_attribute_names:
-            if hasattr(self, df_name):
-                df = getattr(self, df_name)
+            df = getattr(self, df_name, None)
+            if df is not None:
                 if isinstance(df, pd.DataFrame):
                     self.console.print(f"\n[bold magenta]DataFrame: {df_name}[/bold magenta]")
                     if not df.empty:
@@ -847,7 +859,7 @@ class UPAWorkflow:
 
         # Lista de DataFrames y las columnas de pozo correspondientes
         df_configs = {
-            'UPS_DIM_COMPLETACION': 'Completacion_Nombre_Corto',
+            'UPS_DIM_COMPLETACION': 'Completacion_Nombre_Corto_Modificado',
             'CNS_NOC_TOW_CONTROLES': 'NOMBRE_CORTO_POZO',
             'NOC_GR_PERFIL_UPA_DECLINO': 'POZO',
             'UPS_FT_CABEZA_POZO': 'Nombre_Boca_Pozo_Oficial', # Creada en post-procesamiento
@@ -918,7 +930,7 @@ class UPAWorkflow:
                 return
 
             # Precalcular columnas normalizadas para acceso rápido
-            self.UPS_DIM_COMPLETACION['_norm_name'] = self.UPS_DIM_COMPLETACION['Completacion_Nombre_Corto'].apply(self._normalize_well_name)
+            self.UPS_DIM_COMPLETACION['_norm_name'] = self.UPS_DIM_COMPLETACION['Completacion_Nombre_Corto_Modificado'].apply(self._normalize_well_name)
             self.CNS_NOC_TOW_CONTROLES['_norm_name'] = self.CNS_NOC_TOW_CONTROLES['NOMBRE_CORTO_POZO'].apply(self._normalize_well_name)
             self.NOC_GR_PERFIL_UPA_DECLINO['_norm_name'] = self.NOC_GR_PERFIL_UPA_DECLINO['POZO'].apply(self._normalize_well_name)
             self.UPS_FT_CABEZA_POZO['_norm_name'] = self.UPS_FT_CABEZA_POZO['Nombre_Boca_Pozo_Oficial'].apply(self._normalize_well_name)
@@ -954,8 +966,6 @@ class UPAWorkflow:
                 pozo_data_completacion = self.UPS_DIM_COMPLETACION[self.UPS_DIM_COMPLETACION['_norm_name'] == normalized_well_name]
                 controles_df = self.CNS_NOC_TOW_CONTROLES[self.CNS_NOC_TOW_CONTROLES['_norm_name'] == normalized_well_name]
                 declino_df = self.NOC_GR_PERFIL_UPA_DECLINO[self.NOC_GR_PERFIL_UPA_DECLINO['_norm_name'] == normalized_well_name]
-
-                # SOLO crear el pozo si tiene al menos un declino y un control
                 if declino_df.empty or controles_df.empty:
                     skipped_wells_count += 1
                     continue
@@ -965,47 +975,73 @@ class UPAWorkflow:
                 interferencias_df = self.GIDI_POZO[self.GIDI_POZO['_norm_name'] == normalized_well_name]
                 perfil_presiones_df = self.CNS_NOC_PI[self.CNS_NOC_PI['_norm_name'] == normalized_well_name]
                 downtime_df = self.CNS_NOC_TOW_PAR_PERD[self.CNS_NOC_TOW_PAR_PERD['_norm_name'] == normalized_well_name]
-
                 fecha_crono_series = self.UPS_FT_PROY_CONSULTA_ACTIVIDAD.loc[
-                    self.UPS_FT_PROY_CONSULTA_ACTIVIDAD['Sigla_Pozo_Cd'].apply(self._normalize_well_name) == normalized_well_name, 'Fecha_Inicio_Dttm'
+                    self.UPS_FT_PROY_CONSULTA_ACTIVIDAD['_norm_name'] == normalized_well_name, 'Fecha_Inicio_Dttm'
                 ] if 'Sigla_Pozo_Cd' in self.UPS_FT_PROY_CONSULTA_ACTIVIDAD else pd.Series(dtype='datetime64[ns]')
-
                 fecha_ultima_UPA_series = self.ULTIMA_UPA.loc[
-                    self.ULTIMA_UPA['NOMBRE POZO'].apply(self._normalize_well_name) == normalized_well_name, 'FECHA'
+                    self.ULTIMA_UPA['_norm_name'] == normalized_well_name, 'FECHA'
                 ] if 'NOMBRE POZO' in self.ULTIMA_UPA else pd.Series(dtype='datetime64[ns]')
-
                 fecha_UPA_actual_series = self.UPA_actual.loc[
-                    self.UPA_actual['NOMBRE POZO'].apply(self._normalize_well_name) == normalized_well_name, 'FECHA'
+                    self.UPA_actual['_norm_name'] == normalized_well_name, 'FECHA'
                 ] if 'NOMBRE POZO' in self.UPA_actual else pd.Series(dtype='datetime64[ns]')
-
                 diagnostico_df_filtered = self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos[
-                    self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos['NOMBRE_CORTO_POZO'].apply(self._normalize_well_name) == normalized_well_name
+                    self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos['_norm_name'] == normalized_well_name
                 ] if 'NOMBRE_CORTO_POZO' in self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos else pd.DataFrame()
-
                 upa_actual_df_for_pozo = self.UPA_actual[
-                    self.UPA_actual['NOMBRE POZO'].apply(self._normalize_well_name) == normalized_well_name
+                    self.UPA_actual['_norm_name'] == normalized_well_name
                 ] if 'NOMBRE POZO' in self.UPA_actual else pd.DataFrame()
-
                 ultima_upa_df_for_pozo = self.ULTIMA_UPA[
-                    self.ULTIMA_UPA['NOMBRE POZO'].apply(self._normalize_well_name) == normalized_well_name
+                    self.ULTIMA_UPA['_norm_name'] == normalized_well_name
                 ] if 'NOMBRE POZO' in self.ULTIMA_UPA else pd.DataFrame()
-
-                nombre = pozo_data_completacion['Completacion_Nombre_Corto'].values[0]
+                nombre = pozo_data_completacion['Completacion_Nombre_Corto_Modificado'].values[0]
                 sistema_extraccion = pozo_data_completacion['Metodo_Produccion_Actual_Cd'].values[0]
                 area = pozo_data_completacion['Bloque_Monitoreo_Nombre'].values[0]
                 fecha_PEM_val = pozo_data_completacion['Fecha_Inicio_Produccion_Dt'].values[0]
                 fecha_PEM = pd.Timestamp(fecha_PEM_val) if pd.notna(fecha_PEM_val) else pd.NaT
 
-                pozo_obj = pozo(nombre, sistema_extraccion, controles_df, declino_df, cabeza_de_pozo_df, 
-                                instalaciones_df, fecha_PEM, interferencias_df, perfil_presiones_df, downtime_df, area,
-                                fecha_ultima_UPA_series, fecha_UPA_actual_series, diagnostico_df_filtered,
-                                upa_actual_df_for_pozo, ultima_upa_df_for_pozo)
+                # Crear el objeto pozo
+                pozo_obj = pozo(
+                    nombre, sistema_extraccion, controles_df, declino_df, cabeza_de_pozo_df,
+                    instalaciones_df, fecha_PEM, interferencias_df, perfil_presiones_df, downtime_df, area,
+                    fecha_ultima_UPA_series, fecha_UPA_actual_series, diagnostico_df_filtered,
+                    upa_actual_df_for_pozo, ultima_upa_df_for_pozo
+                )
 
+                # Asignar actividad y corte_produccion ANTES de calcular fecha capex
+                if pozo_obj.sistema_extraccion == 'FA':
+                    componentes_pozo = pozo_obj.instalaciones
+                    if not componentes_pozo.empty and 'COMPONENTE' in componentes_pozo.columns and \
+                       componentes_pozo['COMPONENTE'].astype(str).str.contains('VARILLA BOMBEO', case=False, na=False).any():
+                        pozo_obj.actividad = None
+                    else:
+                        pozo_obj.actividad = 'BIF'
+                        pozo_obj.corte_produccion = 110
+                elif pozo_obj.sistema_extraccion == 'FL':
+                    pozo_obj.actividad = 'CBM'
+                    pozo_obj.corte_produccion = 35
+
+                # Ahora sí, calcular fecha capex (y luego estado_actividad)
                 pozo_obj.calcular_fecha_capex()
-                pozo_obj.set_fecha_crono(pd.Timestamp(fecha_crono_series.iloc[0]) if not fecha_crono_series.empty else pd.NaT)
 
+                # Estado de actividad (opcional, si quieres recalcularlo aquí)
+                if pozo_obj.actividad == 'BIF' and pd.notna(pozo_obj.ultimo_control):
+                    if 80 <= pozo_obj.ultimo_control <= 110:
+                        pozo_obj.estado_actividad = 'En ventana BIF'
+                    elif pozo_obj.ultimo_control < 80:
+                        pozo_obj.estado_actividad = 'Atrasada BIF'
+                    elif pozo_obj.ultimo_control > 110:
+                        pozo_obj.estado_actividad = 'Fuera de ventana BIF'
+                elif pozo_obj.actividad == 'CBM' and pd.notna(pozo_obj.ultimo_control):
+                    if 25 <= pozo_obj.ultimo_control <= 35:
+                        pozo_obj.estado_actividad = 'En ventana CBM'
+                    elif 15 <= pozo_obj.ultimo_control < 25:
+                        pozo_obj.estado_actividad = 'Atrasada CBM'
+                    elif pozo_obj.ultimo_control > 35 or pozo_obj.ultimo_control < 15:
+                        pozo_obj.estado_actividad = 'Fuera de ventana CBM'
+
+                pozo_obj.set_fecha_crono(pd.Timestamp(fecha_crono_series.iloc[0]) if not fecha_crono_series.empty else pd.NaT)
                 self.lista_pozos.append(pozo_obj)
-                processed_wells_count += 1 # Incrementar contador de pozos procesados
+                processed_wells_count += 1
         
             self.console.print(f"[green]Sección 4: Creación de objetos Pozo completada.[/green]")
             self.console.print(f"[cyan]Resumen: {processed_wells_count} pozos procesados correctamente, {skipped_wells_count} pozos omitidos por datos inválidos.[/cyan]")
@@ -1029,6 +1065,7 @@ class UPAWorkflow:
         if found_pozo_obj:
             self.console.print(f"\n[bold green]Mostrando atributos para el pozo: {found_pozo_obj.nombre}[/bold green]")
             
+
             table = Table(title=f"Atributos del Pozo: {found_pozo_obj.nombre}", show_lines=True)
             table.add_column("Atributo", style="cyan", overflow="fold")
             table.add_column("Valor", style="magenta", overflow="fold")
@@ -1750,12 +1787,12 @@ def main_menu():
         "A": workflow.run_section_show_parquet_df_info, # Nueva opción
         "4": workflow.run_section_4_create_pozo_objects,
         "B": workflow.run_section_inspect_pozo,
+        "D": workflow.run_section_diagnose_well_matching, # Nueva herramienta de diagnóstico
         "5": workflow.run_section_5_create_upa_plans,
         "6": workflow.run_section_6_process_aseguramiento,
         "7": workflow.run_section_7_calculate_edt_losses,
         "8": workflow.run_section_8_calculate_cierre_upa_losses,
         "C": workflow.run_section_show_upa_monthly_report, # Nueva acción
-        "D": workflow.run_section_diagnose_well_matching, # Nueva herramienta de diagnóstico
     }
 
     while True:
@@ -1833,4 +1870,4 @@ if __name__ == "__main__":
     # Todo
 
     # Armar la para el analisis RTA
-    # Para realizar la prueba del commit
+    # Para realizar la prueba del commitD

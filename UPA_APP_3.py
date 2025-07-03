@@ -25,8 +25,13 @@ from sqlalchemy import create_engine # Añadir esta importación
 # Define the pozo class at the top level
 class pozo:
     def __init__(self, nombre, sistema_extraccion, controles, declino, cabeza_de_pozo, instalaciones, fecha_PEM, interferencias, perfil_presiones, downtime, area, fecha_ultima_UPA_data, fecha_UPA_actual_data, diagnostico_data, UPA_actual_df_for_pozo, ULTIMA_UPA_df_for_pozo):
-        self.nombre = nombre
-        self.sistema_extraccion = sistema_extraccion
+        # --- PASO 1: LIMPIEZA Y ASIGNACIÓN INICIAL ROBUSTA ---
+        # Se limpian los datos de entrada para evitar errores por espacios o mayúsculas.
+        self.nombre = str(nombre).strip() if pd.notna(nombre) else None
+        self.sistema_extraccion = str(sistema_extraccion).strip().upper() if pd.notna(sistema_extraccion) else None
+        self.area = str(area).strip() if pd.notna(area) else None
+        
+        # Asignar DataFrames directamente
         self.controles = controles
         self.declino = declino
         self.cabeza_de_pozo = cabeza_de_pozo
@@ -35,9 +40,9 @@ class pozo:
         self.interferencias = interferencias
         self.perfil_presiones = perfil_presiones
         self.downtime = downtime
-        self.area = area
         self.diagnostico_data = diagnostico_data
 
+        # --- PASO 2: INICIALIZACIÓN DE TODOS LOS ATRIBUTOS CALCULADOS ---
         self.actividad = None
         self.corte_produccion = None
         self.fecha_capex = None
@@ -69,36 +74,12 @@ class pozo:
         self.tiempo_cierre_actividad=None
         self.actividad_UPA=None
 
-        # Process diagnostico
-        if not self.diagnostico_data.empty:
-            # Assuming diagnostico_data is already filtered for the current pozo
-            # and sorted if multiple entries exist for the same pozo (taking the last one)
-            self.diagnostico = self.diagnostico_data # Store the pre-filtered diagnostic data
-            # If diagnostico_data is a DataFrame with multiple rows for the pozo, you might need:
-            # self.diagnostico = self.diagnostico_data.sort_values('FECHA_DIAGNOSTICO', ascending=False).iloc[0] if not self.diagnostico_data.empty else pd.Series()
+        # --- PASO 3: LÓGICA DE CÁLCULO SECUENCIAL ---
 
-        if not self.perfil_presiones.empty:
-            if 'FECHA' in self.perfil_presiones.columns and not self.perfil_presiones['FECHA'].empty:
-                latest_pressure_idx = self.perfil_presiones['FECHA'].idxmax()
-                self.presion_cabeza_actual = self.perfil_presiones.loc[latest_pressure_idx, 'PRESION_CABEZA']
-                self.presion_linea = self.perfil_presiones.loc[latest_pressure_idx, 'PRESION_LINEA']
-                if pd.notna(self.presion_linea) and self.presion_linea != 0 and pd.notna(self.presion_cabeza_actual):
-                    self.relacion_presion_linea = self.presion_cabeza_actual / self.presion_linea
-                else:
-                    self.relacion_presion_linea = None
-
-
-        if not self.interferencias.empty:
-            if 'Inicio Fractura' in self.interferencias.columns and not self.interferencias['Inicio Fractura'].empty:
-                # Ensure 'Inicio Fractura' is datetime
-                self.interferencias['Inicio Fractura'] = pd.to_datetime(self.interferencias['Inicio Fractura'], errors='coerce')
-                self.interferencias['fecha_interferencia'] = self.interferencias['Inicio Fractura'].dt.to_period('M').dt.start_time
-
-
+        # Calcular ultimo_control
         if not self.controles.empty:
             controles_A = self.controles[self.controles['TEST_PURP_CD'] == 'A']
             if 'TEST_DT' in controles_A.columns and not controles_A['TEST_DT'].empty:
-                # Ensure TEST_DT is datetime before finding idxmax
                 controles_A['TEST_DT'] = pd.to_datetime(controles_A['TEST_DT'], errors='coerce')
                 if not controles_A['TEST_DT'].dropna().empty:
                     ultimo_control_idx = controles_A['TEST_DT'].idxmax()
@@ -106,41 +87,35 @@ class pozo:
                         self.ultimo_control = controles_A.loc[ultimo_control_idx, 'BRUTA']
                         self.fecha_ultimo_control = controles_A.loc[ultimo_control_idx, 'TEST_DT']
                         self.orificio_ult_control = controles_A.loc[ultimo_control_idx, 'CHOKE_SIZE']
-                   
-        if sistema_extraccion == 'FA':
-            componentes_pozo = self.instalaciones # Already filtered for the pozo
-            if not componentes_pozo.empty and 'COMPONENTE' in componentes_pozo.columns and \
-               componentes_pozo['COMPONENTE'].astype(str).str.contains('VARILLA BOMBEO', case=False, na=False).any():
-                # print(f"El pozo {self.nombre} tiene 'VARILLA BOMBEO', no se asigna actividad BIF.")
-                self.actividad = None # Or some other indicator
-            else:
-                self.actividad = 'BIF'
-                if pd.notna(self.ultimo_control):
-                    if 80 <= self.ultimo_control <= 110:
-                        self.estado_actividad = 'En ventana BIF'
-                    elif self.ultimo_control < 80:
-                        self.estado_actividad = 'Atrasada BIF'
-                    elif self.ultimo_control > 110:
-                        self.estado_actividad = 'Fuera de ventana BIF'
-                self.corte_produccion = 110
-        elif sistema_extraccion == 'FL':
-            self.actividad = 'CBM'
-            if pd.notna(self.ultimo_control):
-                if 25 <= self.ultimo_control <= 35:
-                    self.estado_actividad = 'En ventana CBM'
-                elif 15 <= self.ultimo_control < 25:
-                    self.estado_actividad = 'Atrasada CBM'
-                elif self.ultimo_control > 35 or self.ultimo_control < 15 : # Adjusted logic
-                    self.estado_actividad = 'Fuera de ventana CBM'
-            self.corte_produccion = 35
-        # else:
-            # print(f"Método de producción no es FA o FL para {self.nombre} - {sistema_extraccion}")
 
-        if not self.declino.empty:
-             self.declino['Declino_pasado'] = None # This seems to be an unused column initialization
+        # Asignar actividad y corte_produccion (AHORA FUNCIONARÁ GRACIAS A LA LIMPIEZA)
+        if self.sistema_extraccion == 'FA':
+            self.actividad = 'BIF'
+            self.corte_produccion = 110
+        elif self.sistema_extraccion == 'FL':
+            self.actividad = 'CBM'
+            self.corte_produccion = 35
         
+        # Asignar estado de la actividad
+        if self.actividad == 'BIF' and pd.notna(self.ultimo_control):
+            if 80 <= self.ultimo_control <= 110: self.estado_actividad = 'En ventana BIF'
+            elif self.ultimo_control < 80: self.estado_actividad = 'Atrasada BIF'
+            elif self.ultimo_control > 110: self.estado_actividad = 'Fuera de ventana BIF'
+        elif self.actividad == 'CBM' and pd.notna(self.ultimo_control):
+            if 25 <= self.ultimo_control <= 35: self.estado_actividad = 'En ventana CBM'
+            elif 15 <= self.ultimo_control < 25: self.estado_actividad = 'Atrasada CBM'
+            elif self.ultimo_control > 35 or self.ultimo_control < 15: self.estado_actividad = 'Fuera de ventana CBM'
+
+        # Procesar el resto de los DataFrames
+        if not self.perfil_presiones.empty and 'FECHA' in self.perfil_presiones.columns:
+            latest_pressure_idx = self.perfil_presiones['FECHA'].idxmax()
+            self.presion_cabeza_actual = self.perfil_presiones.loc[latest_pressure_idx, 'PRESION_CABEZA']
+            self.presion_linea = self.perfil_presiones.loc[latest_pressure_idx, 'PRESION_LINEA']
+            if pd.notna(self.presion_linea) and self.presion_linea != 0:
+                self.relacion_presion_linea = self.presion_cabeza_actual / self.presion_linea
+
         if pd.notna(self.fecha_PEM):
-            self.campana = pd.Timestamp(self.fecha_PEM).year # Use .year for integer year
+            self.campana = pd.Timestamp(self.fecha_PEM).year
 
         if not self.downtime.empty:
             self.downtime['PROD_DT'] = pd.to_datetime(self.downtime['PROD_DT'], errors='coerce')
@@ -196,6 +171,9 @@ class pozo:
 
                     if VM_count > 0 and VB_present:
                         self.asegurado_armadura = "Asegurado con Armadura y varillas en pesca"
+        
+        # --- PASO 4: LLAMADA FINAL AL CÁLCULO DE FECHA CAPEX ---
+        # Esta llamada ahora tiene la garantía de que self.corte_produccion tiene un valor si la actividad es válida.
         self.calcular_fecha_capex()
 
     def calcular_fecha_capex(self):
@@ -554,24 +532,22 @@ class UPAWorkflow:
                             end_time = time.time()
                             self.console.print(f"\n[green]Descarga de '{df_name}' completada en {end_time - start_time:.2f} segundos.[/green]")
                         elif df_name == 'UPS_DIM_COMPLETACION' and db_type == 'teradata':
+                            # --- CONSULTA SQL CORREGIDA Y DEFINITIVA ---
+                            # Se seleccionan explícitamente las columnas para evitar conflictos de nombres.
+                            # No se usa 't.*' para garantizar que los nombres de las columnas son los esperados.
                             query = """
                             SELECT
+                                -- Seleccionamos explícitamente la columna de nombre de pozo ya limpia y le damos un alias claro.
                                 CASE
                                     WHEN POSITION('[' IN t.Completacion_Nombre_Corto) > 0
                                     THEN TRIM(SUBSTRING(t.Completacion_Nombre_Corto FROM 1 FOR POSITION('[' IN t.Completacion_Nombre_Corto) - 1))
                                     ELSE TRIM(t.Completacion_Nombre_Corto)
                                 END AS Completacion_Nombre_Corto_Modificado,
-
-                                TRIM(OREPLACE(
-                                    CASE
-                                        WHEN POSITION('[' IN t.Completacion_Nombre) > 0
-                                        THEN SUBSTRING(t.Completacion_Nombre FROM 1 FOR POSITION('[' IN t.Completacion_Nombre) - 1)
-                                        ELSE t.Completacion_Nombre
-                                    END,
-                                    '-0', '-'
-                                )) AS Completacion_Nombre_Norm,
-
-                                t.*
+                                
+                                -- Seleccionamos las otras columnas que necesitamos por su nombre exacto.
+                                t.Metodo_Produccion_Actual_Cd,
+                                t.Bloque_Monitoreo_Nombre,
+                                t.Fecha_Inicio_Produccion_Dt
                             FROM
                                 P_DIM_V.UPS_DIM_COMPLETACION AS t
                             WHERE
@@ -582,11 +558,11 @@ class UPAWorkflow:
                                 t.Completacion_Nombre_Corto LIKE '%BdT%' OR
                                 t.Completacion_Nombre_Corto LIKE '%LAJe%'
                             """
-                            self.console.print(f"\n[cyan]Ejecutando en Teradata (Completacion filtrada):[/cyan] {query}")
+                            self.console.print(f"\n[cyan]Ejecutando en Teradata (Consulta Explícita para Completacion):[/cyan]")
                             df = conectarse_teradata(query)
                             setattr(self, df_name, df)
                             self.console.print(f"[green]OK: DataFrame '{df_name}' cargado desde TERADATA. Shape: {df.shape}[/green]")
-                            continue
+                            continue # continue es importante para saltar a la siguiente iteración del bucle
                         else:
                             # Lógica general para las demás tablas
                             if db_type == 'cns':
@@ -924,9 +900,12 @@ class UPAWorkflow:
             # --- FIN: Verificación y contadores ---
 
 
-            # Ensure required columns exist before iterating
-            if 'Completacion_Nombre_Corto' not in self.UPS_DIM_COMPLETACION.columns:
-                self.console.print("[red]Error: Columna 'Completacion_Nombre_Corto' no encontrada en UPS_DIM_COMPLETACION.[/red]")
+            # --- CORRECCIÓN ---
+            # Verificar la existencia de la nueva columna que se carga desde la BD.
+            if 'Completacion_Nombre_Corto_Modificado' not in self.UPS_DIM_COMPLETACION.columns:
+                self.console.print("[red]Error: Columna 'Completacion_Nombre_Corto_Modificado' no encontrada en UPS_DIM_COMPLETACION.[/red]")
+                # Opcional: Imprimir columnas disponibles para depuración
+                self.console.print(f"[yellow]Columnas disponibles: {self.UPS_DIM_COMPLETACION.columns.tolist()}[/yellow]")
                 return
 
             # Precalcular columnas normalizadas para acceso rápido
@@ -966,6 +945,16 @@ class UPAWorkflow:
                 pozo_data_completacion = self.UPS_DIM_COMPLETACION[self.UPS_DIM_COMPLETACION['_norm_name'] == normalized_well_name]
                 controles_df = self.CNS_NOC_TOW_CONTROLES[self.CNS_NOC_TOW_CONTROLES['_norm_name'] == normalized_well_name]
                 declino_df = self.NOC_GR_PERFIL_UPA_DECLINO[self.NOC_GR_PERFIL_UPA_DECLINO['_norm_name'] == normalized_well_name]
+                
+                # Asegurarse que la columna BRUTA exista y no tenga NaN antes de pasarla al constructor
+                if 'BRUTA_(m3/DC)' not in declino_df.columns:
+                    if 'PETRÓLEO_(m3/DC)' in declino_df.columns:
+                        declino_df['BRUTA_(m3/DC)'] = declino_df['PETRÓLEO_(m3/DC)']
+                    else:
+                        declino_df['BRUTA_(m3/DC)'] = 0 # O manejar como error si es mandatorio
+                declino_df['BRUTA_(m3/DC)'] = pd.to_numeric(declino_df['BRUTA_(m3/DC)'], errors='coerce').fillna(0)
+
+
                 if declino_df.empty or controles_df.empty:
                     skipped_wells_count += 1
                     continue
@@ -977,29 +966,29 @@ class UPAWorkflow:
                 downtime_df = self.CNS_NOC_TOW_PAR_PERD[self.CNS_NOC_TOW_PAR_PERD['_norm_name'] == normalized_well_name]
                 fecha_crono_series = self.UPS_FT_PROY_CONSULTA_ACTIVIDAD.loc[
                     self.UPS_FT_PROY_CONSULTA_ACTIVIDAD['_norm_name'] == normalized_well_name, 'Fecha_Inicio_Dttm'
-                ] if 'Sigla_Pozo_Cd' in self.UPS_FT_PROY_CONSULTA_ACTIVIDAD else pd.Series(dtype='datetime64[ns]')
+                ] if 'Sigla_Pozo_Cd' in self.UPS_FT_PROY_CONSULTA_ACTIVIDAD.columns else pd.Series(dtype='datetime64[ns]')
                 fecha_ultima_UPA_series = self.ULTIMA_UPA.loc[
                     self.ULTIMA_UPA['_norm_name'] == normalized_well_name, 'FECHA'
-                ] if 'NOMBRE POZO' in self.ULTIMA_UPA else pd.Series(dtype='datetime64[ns]')
+                ] if 'NOMBRE POZO' in self.ULTIMA_UPA.columns else pd.Series(dtype='datetime64[ns]')
                 fecha_UPA_actual_series = self.UPA_actual.loc[
                     self.UPA_actual['_norm_name'] == normalized_well_name, 'FECHA'
-                ] if 'NOMBRE POZO' in self.UPA_actual else pd.Series(dtype='datetime64[ns]')
+                ] if 'NOMBRE POZO' in self.UPA_actual.columns else pd.Series(dtype='datetime64[ns]')
                 diagnostico_df_filtered = self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos[
                     self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos['_norm_name'] == normalized_well_name
-                ] if 'NOMBRE_CORTO_POZO' in self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos else pd.DataFrame()
+                ] if 'NOMBRE_CORTO_POZO' in self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos.columns else pd.DataFrame()
                 upa_actual_df_for_pozo = self.UPA_actual[
                     self.UPA_actual['_norm_name'] == normalized_well_name
-                ] if 'NOMBRE POZO' in self.UPA_actual else pd.DataFrame()
+                ] if 'NOMBRE POZO' in self.UPA_actual.columns else pd.DataFrame()
                 ultima_upa_df_for_pozo = self.ULTIMA_UPA[
                     self.ULTIMA_UPA['_norm_name'] == normalized_well_name
-                ] if 'NOMBRE POZO' in self.ULTIMA_UPA else pd.DataFrame()
+                ] if 'NOMBRE POZO' in self.ULTIMA_UPA.columns else pd.DataFrame()
                 nombre = pozo_data_completacion['Completacion_Nombre_Corto_Modificado'].values[0]
                 sistema_extraccion = pozo_data_completacion['Metodo_Produccion_Actual_Cd'].values[0]
                 area = pozo_data_completacion['Bloque_Monitoreo_Nombre'].values[0]
                 fecha_PEM_val = pozo_data_completacion['Fecha_Inicio_Produccion_Dt'].values[0]
                 fecha_PEM = pd.Timestamp(fecha_PEM_val) if pd.notna(fecha_PEM_val) else pd.NaT
 
-                # Crear el objeto pozo
+                # Crear el objeto pozo. El constructor se encarga de TODOS los cálculos.
                 pozo_obj = pozo(
                     nombre, sistema_extraccion, controles_df, declino_df, cabeza_de_pozo_df,
                     instalaciones_df, fecha_PEM, interferencias_df, perfil_presiones_df, downtime_df, area,
@@ -1007,38 +996,7 @@ class UPAWorkflow:
                     upa_actual_df_for_pozo, ultima_upa_df_for_pozo
                 )
 
-                # Asignar actividad y corte_produccion ANTES de calcular fecha capex
-                if pozo_obj.sistema_extraccion == 'FA':
-                    componentes_pozo = pozo_obj.instalaciones
-                    if not componentes_pozo.empty and 'COMPONENTE' in componentes_pozo.columns and \
-                       componentes_pozo['COMPONENTE'].astype(str).str.contains('VARILLA BOMBEO', case=False, na=False).any():
-                        pozo_obj.actividad = None
-                    else:
-                        pozo_obj.actividad = 'BIF'
-                        pozo_obj.corte_produccion = 110
-                elif pozo_obj.sistema_extraccion == 'FL':
-                    pozo_obj.actividad = 'CBM'
-                    pozo_obj.corte_produccion = 35
-
-                # Ahora sí, calcular fecha capex (y luego estado_actividad)
-                pozo_obj.calcular_fecha_capex()
-
-                # Estado de actividad (opcional, si quieres recalcularlo aquí)
-                if pozo_obj.actividad == 'BIF' and pd.notna(pozo_obj.ultimo_control):
-                    if 80 <= pozo_obj.ultimo_control <= 110:
-                        pozo_obj.estado_actividad = 'En ventana BIF'
-                    elif pozo_obj.ultimo_control < 80:
-                        pozo_obj.estado_actividad = 'Atrasada BIF'
-                    elif pozo_obj.ultimo_control > 110:
-                        pozo_obj.estado_actividad = 'Fuera de ventana BIF'
-                elif pozo_obj.actividad == 'CBM' and pd.notna(pozo_obj.ultimo_control):
-                    if 25 <= pozo_obj.ultimo_control <= 35:
-                        pozo_obj.estado_actividad = 'En ventana CBM'
-                    elif 15 <= pozo_obj.ultimo_control < 25:
-                        pozo_obj.estado_actividad = 'Atrasada CBM'
-                    elif pozo_obj.ultimo_control > 35 or pozo_obj.ultimo_control < 15:
-                        pozo_obj.estado_actividad = 'Fuera de ventana CBM'
-
+                # La única asignación externa que queda es la fecha_crono, que es correcto.
                 pozo_obj.set_fecha_crono(pd.Timestamp(fecha_crono_series.iloc[0]) if not fecha_crono_series.empty else pd.NaT)
                 self.lista_pozos.append(pozo_obj)
                 processed_wells_count += 1
@@ -1055,9 +1013,14 @@ class UPAWorkflow:
         well_name_input = Prompt.ask("Ingrese el nombre del pozo a inspeccionar")
         normalized_input = self._normalize_well_name(well_name_input)
         
+       
+
+        
+        
         found_pozo_obj = None
         for pozo_obj in self.lista_pozos:
             normalized_pozo_attr_name = self._normalize_well_name(pozo_obj.nombre)
+           
             if normalized_pozo_attr_name == normalized_input:
                 found_pozo_obj = pozo_obj
                 break
@@ -1066,6 +1029,7 @@ class UPAWorkflow:
             self.console.print(f"\n[bold green]Mostrando atributos para el pozo: {found_pozo_obj.nombre}[/bold green]")
             
 
+           
             table = Table(title=f"Atributos del Pozo: {found_pozo_obj.nombre}", show_lines=True)
             table.add_column("Atributo", style="cyan", overflow="fold")
             table.add_column("Valor", style="magenta", overflow="fold")
@@ -1146,8 +1110,6 @@ class UPAWorkflow:
         # Sort
         pozos_cbm_ordenados = sorted(pozos_cbm_filtrados, key=lambda x: (x.ultimo_control or float('-inf'), x.presion_cabeza_actual or float('-inf'), x.orificio_ult_control or float('-inf'), x.relacion_presion_linea or float('-inf')))
         pozos_bif_ordenados = sorted(pozos_bif_filtrados, key=lambda x: (x.ultimo_control or float('-inf'), x.presion_cabeza_actual or float('-inf'), x.orificio_ult_control or float('-inf'), x.relacion_presion_linea or float('-inf')))
-
-
 
         # Filter out pozos without fecha_capex
         pozos_bif_ordenados = [p for p in pozos_bif_ordenados if pd.notna(p.fecha_capex)]
@@ -1233,17 +1195,17 @@ class UPAWorkflow:
             mes_period_cl = fecha_mes_cl.to_period('M')
             
             # Pozos scheduled for this month (before limits)
-            current_bif_for_month = sorted([p for p in pozos_bif_plan_limitado if pd.Timestamp(p.fecha_capex_ajustada).to_period('M') == mes_period_cl], key=lambda x: x.prioridad if pd.notna(x.prioridad) else float('inf'))
-            current_cbm_for_month = sorted([p for p in pozos_cbm_plan_limitado if pd.Timestamp(p.fecha_capex_ajustada).to_period('M') == mes_period_cl], key=lambda x: x.prioridad if pd.notna(x.prioridad) else float('inf'))
+            current_bif_for_month_sl = sorted([p for p in pozos_bif_plan_limitado if pd.Timestamp(p.fecha_capex_ajustada).to_period('M') == mes_period_cl], key=lambda x: x.prioridad if pd.notna(x.prioridad) else float('inf'))
+            current_cbm_for_month_sl = sorted([p for p in pozos_cbm_plan_limitado if pd.Timestamp(p.fecha_capex_ajustada).to_period('M') == mes_period_cl], key=lambda x: x.prioridad if pd.notna(x.prioridad) else float('inf'))
 
             # Apply monthly limits
-            bif_this_month_actual = current_bif_for_month[:max_bif_mensuales[mes_period_cl.month - 1]]
-            cbm_this_month_actual = current_cbm_for_month[:max_cbm_mensuales[mes_period_cl.month - 1]]
+            bif_this_month_sl = current_bif_for_month_sl[:max_bif_mensuales[mes_period_cl.month - 1]]
+            cbm_this_month_sl = current_cbm_for_month_sl[:max_cbm_mensuales[mes_period_cl.month - 1]]
             
-            upa_con_limite_list.append({'Mes': mes_period_cl, 'Pozos_BIF': len(bif_this_month_actual), 'Pozos_CBM': len(cbm_this_month_actual)})
+            upa_con_limite_list.append({'Mes': mes_period_cl, 'Pozos_BIF': len(bif_this_month_sl), 'Pozos_CBM': len(cbm_this_month_sl)})
 
             # Add selected pozos to export list
-            for p_list_actual in [bif_this_month_actual, cbm_this_month_actual]:
+            for p_list_actual in [bif_this_month_sl, cbm_this_month_sl]:
                 for p_actual in p_list_actual:
                     declino_val = p_actual.search_declino(p_actual.fecha_capex_ajustada)
                     data_upa_con_limite_export.append([
@@ -1254,8 +1216,8 @@ class UPAWorkflow:
                     ])
             
             # Pozos to be deferred
-            bif_deferred = current_bif_for_month[max_bif_mensuales[mes_period_cl.month - 1]:]
-            cbm_deferred = current_cbm_for_month[max_cbm_mensuales[mes_period_cl.month - 1]:]
+            bif_deferred = current_bif_for_month_sl[max_bif_mensuales[mes_period_cl.month - 1]:]
+            cbm_deferred = current_cbm_for_month_sl[max_cbm_mensuales[mes_period_cl.month - 1]:]
 
             next_month_start = (mes_period_cl + 1).start_time
             for p_def_list in [bif_deferred, cbm_deferred]:
@@ -1404,8 +1366,8 @@ class UPAWorkflow:
         )
         
         # Ensure PERDIDA_PETROLEO is numeric for sorting
-        pozos_filtrados_edt['PERDIDA_PETROLEO'] = pd.to_numeric(pozos_filtrados_edt.get('PERDIDA_PETROLEO'), errors='coerce').fillna(0)
-        pozos_filtrados_edt['PROD_OIL_24'] = pd.to_numeric(pozos_filtrados_edt.get('PROD_OIL_24'), errors='coerce').fillna(0)
+        pozos_filtrados_edt['PERDIDA_PETROLEO'] = pd.to_numeric(pozoes_filtrados_edt.get('PERDIDA_PETROLEO'), errors='coerce').fillna(0)
+        pozos_filtrados_edt['PROD_OIL_24'] = pd.to_numeric(pozoes_filtrados_edt.get('PROD_OIL_24'), errors='coerce').fillna(0)
 
 
         pozos_priorizados_edt = pozos_filtrados_edt.sort_values(by=['PERDIDA_PETROLEO', 'PROD_OIL_24'], ascending=[False, False])

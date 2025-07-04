@@ -444,39 +444,44 @@ class UPAWorkflow:
         return file_path, df  # Return the original file_path and the DataFrame
 
     def run_section_1_load_excel_data(self):
-        """Carga solo los archivos Excel, los guarda inmediatamente a Parquet y luego aplica el post-procesamiento."""
-        self.console.rule("[bold blue]1. Carga de Archivos Excel y Guardado a Parquet[/bold blue]")
+        """Carga los archivos Excel, los procesa y luego los guarda a Parquet."""
+        self.console.rule("[bold blue]1. Carga de Archivos Excel, Procesamiento y Guardado a Parquet[/bold blue]")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            try:
-                excel_files_to_load = {
-                    "GIDI_POZO": "datos_prueba/GIDI_POZO.xlsx",
-                    "NOC_GR_PERFIL_UPA_DECLINO": "datos_prueba/NOC_G&R_PERFIL_UPA_DECLINO.xlsx", # Corregido G&R a GR
-                    "PA_2025_Activos": "datos_prueba/PA_2025_Activos.xlsx",
-                    "ULTIMA_UPA": "datos_prueba/UPA_anterior.xlsx",
-                    "UPA_actual": "datos_prueba/UPA_actual.xlsx",
-                    "FDD_CNS_GRALO_FDP_DIAGNOSTICO": "datos_prueba/FDD_CNS_GRALO_FDP_DIAGNOSTICO.xlsx"
-                }
- 
-                for df_name, file_path in tqdm(excel_files_to_load.items(), desc="Cargando y guardando Excels a Parquet"):
-                    try:
-                        # Cargar el archivo Excel
-                        df = pd.read_excel(file_path)
-                        setattr(self, df_name, df)
-                        
-                        # Guardar inmediatamente a Parquet
-                        self._save_df_to_parquet(df, df_name, {})
+        try:
+            excel_files_to_load = {
+                "GIDI_POZO": "datos_prueba/GIDI_POZO.xlsx",
+                "NOC_GR_PERFIL_UPA_DECLINO": "datos_prueba/NOC_G&R_PERFIL_UPA_DECLINO.xlsx", # Corregido G&R a GR
+                "PA_2025_Activos": "datos_prueba/PA_2025_Activos.xlsx",
+                "ULTIMA_UPA": "datos_prueba/UPA_anterior.xlsx",
+                "UPA_actual": "datos_prueba/UPA_actual.xlsx",
+                "FDD_CNS_GRALO_FDP_DIAGNOSTICO": "datos_prueba/FDD_CNS_GRALO_FDP_DIAGNOSTICO.xlsx"
+            }
 
-                    except Exception as e:
-                        self.console.print(f"\n[red]Error cargando o guardando el archivo '{file_path}': {e}[/red]")
-                        setattr(self, df_name, pd.DataFrame())
+            for df_name, file_path in tqdm(excel_files_to_load.items(), desc="Cargando archivos Excel"):
+                try:
+                    # Cargar el archivo Excel
+                    df = pd.read_excel(file_path)
+                    setattr(self, df_name, df)
+                except Exception as e:
+                    self.console.print(f"\n[red]Error cargando el archivo '{file_path}': {e}[/red]")
+                    setattr(self, df_name, pd.DataFrame())
 
-                self.console.print("[green]Carga de Excels y guardado a Parquet completado.[/green]")
-                self.console.print("[yellow]Ejecutando post-procesamiento sobre los datos en memoria...[/yellow]")
-                self._apply_post_processing()
+            # Aplicar procesamiento ANTES de guardar
+            self.console.print("[yellow]Ejecutando post-procesamiento sobre los datos en memoria...[/yellow]")
+            self._apply_post_processing()
+            
+            # DESPUÉS del procesamiento, guardar a Parquet
+            self.console.print("[yellow]Guardando DataFrames procesados a Parquet...[/yellow]")
+            for df_name in tqdm(excel_files_to_load.keys(), desc="Guardando a Parquet"):
+                df = getattr(self, df_name)
+                if not df.empty:
+                    self._save_df_to_parquet(df, df_name, {})
 
-            except Exception as e:
-                self.console.print(f"[bold red]Error en run_section_1_load_excel_data: {e}[/bold red]")
+            self.console.print("[green]Carga de Excels, procesamiento y guardado a Parquet completados.[/green]")
+
+        except Exception as e:
+            self.console.print(f"[bold red]Error en run_section_1_load_excel_data: {e}[/bold red]")
 
 
     def run_section_1b_load_from_database(self):
@@ -627,16 +632,34 @@ class UPAWorkflow:
                 self.actividad_aseguramiento['Fecha Aseg'] = self.actividad_aseguramiento['Inicio Fractura'].apply(lambda x: x - pd.DateOffset(months=1) if pd.notna(x) else pd.NaT)
 
         if hasattr(self, 'GIDI_POZO') and not self.GIDI_POZO.empty:
+            # Asegurar que MPE_rem se convierte correctamente a valores numéricos
+            self.GIDI_POZO['MPE_rem'] = pd.to_numeric(self.GIDI_POZO['MPE_rem'], errors='coerce')
+            
             def calcular_meses_desplazados_gidi(mpe_rem):
-                if pd.isna(mpe_rem): return None
-                if mpe_rem <= 100: return 1
-                elif 100 < mpe_rem <= 250: return 2
-                elif 250 < mpe_rem <= 400: return 3
-                elif mpe_rem > 400: return 4
-                return None
+                try:
+                    mpe_rem = float(mpe_rem)  # Forzar conversión numérica
+                    if pd.isna(mpe_rem): return 0
+                    if mpe_rem <= 100: return 1
+                    elif 100 < mpe_rem <= 250: return 2
+                    elif 250 < mpe_rem <= 400: return 3
+                    elif mpe_rem > 400: return 4
+                    return 0
+                except (ValueError, TypeError):
+                    return 0
+            
+            # Calcular y asignar Meses_Desplazados como enteros
             self.GIDI_POZO['Meses_Desplazados'] = self.GIDI_POZO['MPE_rem'].apply(calcular_meses_desplazados_gidi)
+            self.GIDI_POZO['Meses_Desplazados'] = pd.to_numeric(self.GIDI_POZO['Meses_Desplazados'], 
+                                                          errors='coerce').fillna(0).astype(int)
+            
+            # Asegurar fechas correctas
             self.GIDI_POZO['Inicio Fractura'] = pd.to_datetime(self.GIDI_POZO['Inicio Fractura'], errors='coerce')
             self.GIDI_POZO['fecha_interferencia'] = self.GIDI_POZO['Inicio Fractura'].dt.to_period('M').dt.start_time
+            
+            # Depuración: mostrar primeras filas para verificar
+            print("\n--- Depuración de Meses_Desplazados ---")
+            print(self.GIDI_POZO[['padre', 'MPE_rem', 'Meses_Desplazados']].head(10))
+            print("-------------------------------------\n")
         
         if hasattr(self, 'ULTIMA_UPA') and not self.ULTIMA_UPA.empty:
             self.ULTIMA_UPA['FECHA'] = pd.to_datetime(self.ULTIMA_UPA['FECHA'], errors='coerce')
@@ -837,7 +860,7 @@ class UPAWorkflow:
         df_configs = {
             'UPS_DIM_COMPLETACION': 'Completacion_Nombre_Corto_Modificado',
             'CNS_NOC_TOW_CONTROLES': 'NOMBRE_CORTO_POZO',
-            'NOC_GR_PERFIL_UPA_DECLINO': 'POZO',
+            'NOC_GR_PERFIL_UPA': 'POZO',
             'UPS_FT_CABEZA_POZO': 'Nombre_Boca_Pozo_Oficial', # Creada en post-procesamiento
             'FDD_CNS_NOC_OW_INSTALACIONES': 'NOMBRE_POZO',
             'GIDI_POZO': 'padre',

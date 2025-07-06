@@ -1389,8 +1389,8 @@ class UPAWorkflow:
         )
         
         # Ensure PERDIDA_PETROLEO is numeric for sorting
-        pozos_filtrados_edt['PERDIDA_PETROLEO'] = pd.to_numeric(pozoes_filtrados_edt.get('PERDIDA_PETROLEO'), errors='coerce').fillna(0)
-        pozos_filtrados_edt['PROD_OIL_24'] = pd.to_numeric(pozoes_filtrados_edt.get('PROD_OIL_24'), errors='coerce').fillna(0)
+        pozos_filtrados_edt['PERDIDA_PETROLEO'] = pd.to_numeric(pozos_filtrados_edt.get('PERDIDA_PETROLEO'), errors='coerce').fillna(0)
+        pozos_filtrados_edt['PROD_OIL_24'] = pd.to_numeric(pozos_filtrados_edt.get('PROD_OIL_24'), errors='coerce').fillna(0)
 
 
         pozos_priorizados_edt = pozos_filtrados_edt.sort_values(by=['PERDIDA_PETROLEO', 'PROD_OIL_24'], ascending=[False, False])
@@ -1398,7 +1398,7 @@ class UPAWorkflow:
         pozos_priorizados_edt['fecha_PU'] = pd.NaT
         pozos_priorizados_edt['fecha_EDT'] = pd.NaT
 
-        fecha_inicio_edt = pd.to_datetime('2025-06-01')
+        fecha_inicio_edt = pd.to_datetime('2025-07-01')
         fechas_edt_calc = pd.date_range(start=fecha_inicio_edt, end='2025-12-01', freq='MS') # Corrected end date
         
         resultados_edt = []
@@ -1411,20 +1411,30 @@ class UPAWorkflow:
 
         plan_perdidas_EDT_conocidas = pd.concat(resultados_edt, ignore_index=True)
         
-        # The logic for df_operativos_balanceados and filtering by fecha_PU was commented out
-        # in the original notebook, so it's omitted here unless specified.
-
+        # Después de crear plan_perdidas_EDT_conocidas y antes de exportar
         try:
             import os
             os.makedirs("Resultados", exist_ok=True)
             plan_perdidas_EDT_conocidas.to_excel('Resultados/Perdidas_EDT_conocidas.xlsx', index=False)
             self.console.print("[green]Exportado 'Perdidas_EDT_conocidas.xlsx'[/green]")
 
+            # Crear la tabla pivot
             apertura_plan_perdidas_EDT_pivot = plan_perdidas_EDT_conocidas.pivot_table(
-                index='fecha_EDT', columns='NOMBRE_CORTO_POZO', values='P_EDT', aggfunc='first' # Use first if unique per pozo-fecha
+                index='fecha_EDT', columns='NOMBRE_CORTO_POZO', values='P_EDT', aggfunc='first'
             )
+            
+            # Calcular la suma total de pérdidas por pozo
+            total_perdidas_por_pozo = apertura_plan_perdidas_EDT_pivot.sum()
+            
+            # Ordenar los pozos por el total de pérdidas (de mayor a menor)
+            pozos_ordenados = total_perdidas_por_pozo.sort_values(ascending=False).index.tolist()
+            
+            # Reordenar las columnas de la tabla pivot según la suma de pérdidas
+            apertura_plan_perdidas_EDT_pivot = apertura_plan_perdidas_EDT_pivot[pozos_ordenados]
+            
+            # Exportar la tabla pivot reordenada
             apertura_plan_perdidas_EDT_pivot.to_excel("Resultados/Tabla_pivot_EDT_Conocidas.xlsx")
-            self.console.print("[green]Exportado 'Tabla_pivot_EDT_Conocidas.xlsx'[/green]")
+            self.console.print("[green]Exportado 'Tabla_pivot_EDT_Conocidas.xlsx' con columnas ordenadas por pérdida total[/green]")
 
         except Exception as e:
             self.console.print(f"[red]Error exportando resultados EDT: {e}[/red]")

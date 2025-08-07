@@ -41,9 +41,15 @@ class pozo:
         self.perfil_presiones = perfil_presiones
         self.downtime = downtime
         self.diagnostico_data = diagnostico_data
+        self.fecha_ultima_UPA_data = fecha_ultima_UPA_data
+        self.fecha_UPA_actual_data = fecha_UPA_actual_data
 
         # --- PASO 2: INICIALIZACIÓN DE TODOS LOS ATRIBUTOS CALCULADOS ---
+        self.fecha_inicio_produccion_dt = fecha_PEM
+        self.fecha_capex_pem = None
         self.actividad = None
+        self.fecha_capex_BIF = None
+        self.fecha_capex_CBM = None
         self.corte_produccion = None
         self.fecha_capex = None
         self.bruta_declino_inicial = None
@@ -74,7 +80,10 @@ class pozo:
         self.tiempo_cierre_actividad=None
         self.actividad_UPA=None
 
-        # --- PASO 3: LÓGICA DE CÁLCULO SECUENCIAL ---
+ 
+    def procesar_datos(self, UPA_actual_df_for_pozo):
+        """Ejecuta toda la lógica de cálculo para el pozo después de la inicialización."""
+        # --- PASO 3: LÓGICA DE CÁLCULO SECUENCIAL --- (Movido desde __init__)
 
         # Calcular ultimo_control
         if not self.controles.empty:
@@ -89,12 +98,23 @@ class pozo:
                         self.orificio_ult_control = controles_A.loc[ultimo_control_idx, 'CHOKE_SIZE']
 
         # Asignar actividad y corte_produccion (AHORA FUNCIONARÁ GRACIAS A LA LIMPIEZA)
-        if self.sistema_extraccion == 'FA':
+        # Se robustece la lógica para asegurar que siempre se asigne una actividad y un corte de producción.
+        if self.sistema_extraccion == 'FA': # FA = Bombeo Mecánico
             self.actividad = 'BIF'
             self.corte_produccion = 110
-        elif self.sistema_extraccion == 'FL':
+        elif self.sistema_extraccion in ['FL', 'SR']: # FL = Flowing Lift, SR = Surgente
             self.actividad = 'CBM'
             self.corte_produccion = 35
+        else: # Caso por defecto para pozos nuevos o con SE no especificado (e.g., None, 'OTRO')
+            # Se asume CBM como default, ya que es el estado inicial de la mayoría de pozos no convencionales.
+            self.actividad = 'CBM'
+            self.corte_produccion = 35
+
+        if pd.notna(self.fecha_inicio_produccion_dt):
+            if self.actividad == 'BIF':
+                self.fecha_capex_pem = self.fecha_inicio_produccion_dt + pd.DateOffset(months=11)
+            elif self.actividad == 'CBM':
+                self.fecha_capex_pem = self.fecha_inicio_produccion_dt + pd.DateOffset(months=22)
         
         # Asignar estado de la actividad
         if self.actividad == 'BIF' and pd.notna(self.ultimo_control):
@@ -134,11 +154,11 @@ class pozo:
                 elif pd.notna(self.tiempo_ultimo_paro) and self.tiempo_ultimo_paro < 24:
                     self.estado_operativo = 'Operativo'
         
-        if not fecha_ultima_UPA_data.empty:
-            self.fecha_upa_anterior = pd.Timestamp(fecha_ultima_UPA_data.iloc[0]) if not fecha_ultima_UPA_data.empty else pd.NaT
+        if not self.fecha_ultima_UPA_data.empty:
+            self.fecha_upa_anterior = pd.Timestamp(self.fecha_ultima_UPA_data.iloc[0]) if not self.fecha_ultima_UPA_data.empty else pd.NaT
         
-        if not fecha_UPA_actual_data.empty:
-            self.fecha_UPA_actual = pd.Timestamp(fecha_UPA_actual_data.iloc[0]) if not fecha_UPA_actual_data.empty else pd.NaT
+        if not self.fecha_UPA_actual_data.empty:
+            self.fecha_UPA_actual = pd.Timestamp(self.fecha_UPA_actual_data.iloc[0]) if not self.fecha_UPA_actual_data.empty else pd.NaT
             # Get 'Días de Cierre' from UPA_actual_df_for_pozo for the current pozo
             if not UPA_actual_df_for_pozo.empty:
                 pozo_data_in_upa_actual = UPA_actual_df_for_pozo[UPA_actual_df_for_pozo['NOMBRE POZO'] == self.nombre]
@@ -174,8 +194,51 @@ class pozo:
         
         # --- PASO 4: LLAMADA FINAL AL CÁLCULO DE FECHA CAPEX ---
         # Esta llamada ahora tiene la garantía de que self.corte_produccion tiene un valor si la actividad es válida.
-        self.calcular_fecha_capex()
+        self.calcular_fecha_capex() # Se mantiene aquí para que se ejecute al final del procesamiento
+        
+        # --- PASO 5: CÁLCULO DE FECHAS CAPEX GENÉRICAS Y CORREGIDAS ---
+        # Se calcula la fecha cruda y luego se le aplica la misma corrección de interferencias que a la fecha principal.
+        raw_bif_date = self._calculate_generic_capex(110)
+        self.fecha_capex_BIF, _ = self._apply_interference_correction(raw_bif_date)
 
+        raw_cbm_date = self._calculate_generic_capex(35)
+        self.fecha_capex_CBM, _ = self._apply_interference_correction(raw_cbm_date)
+
+    def _apply_interference_correction(self, base_date):
+        """
+        Aplica correcciones por interferencias a una fecha base.
+        Devuelve la fecha ajustada y los meses totales de desplazamiento.
+        """
+        if pd.isna(base_date) or self.interferencias is None or self.interferencias.empty or 'fecha_interferencia' not in self.interferencias.columns:
+            return base_date, 0
+
+        # Asegurar que 'Meses_Desplazados' es numérico y entero
+        self.interferencias['Meses_Desplazados'] = pd.to_numeric(self.interferencias['Meses_Desplazados'], errors='coerce').fillna(0).astype(int)
+
+        adjusted_date = pd.Timestamp(base_date)
+        
+        # 1. Corrección por interferencias previas
+        interferencias_previas_df = self.interferencias[self.interferencias['fecha_interferencia'] <= adjusted_date]
+        meses_desplazados_prev = interferencias_previas_df['Meses_Desplazados'].sum()
+        
+        if meses_desplazados_prev > 0:
+            adjusted_date += pd.DateOffset(months=int(meses_desplazados_prev))
+
+        # 2. Corrección por interferencias en el mes siguiente
+        fecha_capex_mas_1_mes = base_date + pd.DateOffset(months=1)
+        interferencias_post_1_mes = self.interferencias[
+            (self.interferencias['fecha_interferencia'] > base_date) &
+            (self.interferencias['fecha_interferencia'] <= fecha_capex_mas_1_mes)
+        ]
+        meses_desplazados_post_1 = interferencias_post_1_mes['Meses_Desplazados'].sum()
+
+        if meses_desplazados_post_1 > 0:
+            adjusted_date += pd.DateOffset(months=int(meses_desplazados_post_1))
+
+        total_displacement = meses_desplazados_prev + meses_desplazados_post_1
+        
+        return adjusted_date, total_displacement
+        
     def calcular_fecha_capex(self):
         if self.declino.empty or 'BRUTA_(m3/DC)' not in self.declino.columns or self.corte_produccion is None:
             return
@@ -204,35 +267,65 @@ class pozo:
                 self.bruta_declino_inicial = row['BRUTA_(m3/DC)']
                 self.correccion="Sin correcion - Fecha declino"
                 break
- 
-        if self.interferencias is not None and not self.interferencias.empty and pd.notna(self.fecha_capex) and 'fecha_interferencia' in self.interferencias.columns:
-            # Ensure 'Meses_Desplazados' is numeric and integer
-            self.interferencias['Meses_Desplazados'] = pd.to_numeric(self.interferencias['Meses_Desplazados'], errors='coerce').fillna(0).astype(int)
 
-            interferencias_previas_df = self.interferencias[self.interferencias['fecha_interferencia'] <= self.fecha_capex]
-            meses_desplazados_prev = interferencias_previas_df['Meses_Desplazados'].sum()
-            
-            self.meses_desplazados = meses_desplazados_prev # Store sum of previous displacements
-            if pd.notna(self.fecha_capex_ajustada) and meses_desplazados_prev > 0:
-                 self.fecha_capex_ajustada += pd.DateOffset(months=int(meses_desplazados_prev))
-                 self.correccion="Con correcion - Interferencias previas al declino"
+        # --- LÓGICA DE FALLBACK (NUEVO) ---
+        # Si después de analizar la curva de declino no se encontró una fecha_capex (porque la producción nunca bajó del umbral),
+        # se utiliza como fallback la fecha teórica calculada a partir de la fecha PEM del pozo.
+        # Esto es crucial para poder planificar pozos futuros o que aún producen por encima del umbral.
+        if self.fecha_capex is None and pd.notna(self.fecha_capex_pem):
+            self.fecha_capex = self.fecha_capex_pem
+            self.fecha_capex_ajustada = self.fecha_capex_pem
+            self.correccion = "Sin declino - Fecha teórica por PEM"
+            self.bruta_declino_inicial = 0 # No hay un valor de declino real en este caso
 
-            # Consider interferences up to 1 month after initial capex date for further adjustment
-            fecha_capex_mas_1_mes = self.fecha_capex + pd.DateOffset(months=1) # Changed from 2 to 1 as per logic in verificar_interferencias
-            interferencias_post_1_mes = self.interferencias[
-                (self.interferencias['fecha_interferencia'] > self.fecha_capex) &
-                (self.interferencias['fecha_interferencia'] <= fecha_capex_mas_1_mes)
-            ]
-            meses_desplazados_post_1 = interferencias_post_1_mes['Meses_Desplazados'].sum()
+        # --- APLICAR CORRECCIÓN ---
+        # Ahora usamos el método helper para aplicar la corrección y guardar los resultados
+        if pd.notna(self.fecha_capex):
+            adjusted_date, total_displacement = self._apply_interference_correction(self.fecha_capex)
+            self.fecha_capex_ajustada = adjusted_date
+            self.meses_desplazados = total_displacement
             
-            if pd.notna(self.fecha_capex_ajustada) and meses_desplazados_post_1 > 0:
-                self.fecha_capex_ajustada += pd.DateOffset(months=int(meses_desplazados_post_1))
-                self.meses_desplazados += meses_desplazados_post_1 # Add to total
-                # Update correccion if it was already set
-                if "Con correcion" in str(self.correccion):
-                    self.correccion += " e interferencias post-declino (+1 mes)"
+            # Si la fecha original era teórica (por PEM), se mantiene ese mensaje base
+            if "teórica por PEM" in str(self.correccion) and total_displacement > 0:
+                self.correccion = "Fecha teórica por PEM, ajustada por interferencias"
+            elif total_displacement > 0:
+                # Generar mensaje de corrección específico
+                if "previas" in self.correccion and "post-declino" in self.correccion: # Placeholder logic
+                    self.correccion = "Con corrección - Interferencias previas y post-declino (+1 mes)"
+                elif "previas" in self.correccion:
+                    self.correccion = "Con corrección - Interferencias previas al declino"
                 else:
-                    self.correccion = "Con correcion - Interferencias post-declino (+1 mes)"
+                    self.correccion = "Con corrección - Interferencias post-declino (+1 mes)"
+            # Si no, se mantiene el mensaje original ("Sin declino - Fecha teórica por PEM" o "Sin correcion - Fecha declino")
+            elif "teórica por PEM" not in str(self.correccion):
+                 self.correccion = "Sin correcion - Fecha declino"
+
+    def _calculate_generic_capex(self, cutoff):
+        """Calcula una fecha de capex genérica basada en un umbral de producción, sin importar el SE."""
+        if self.declino.empty or 'BRUTA_(m3/DC)' not in self.declino.columns:
+            return pd.NaT
+
+        # Asegurar que FECHA es datetime y está ordenado
+        declino_df = self.declino.copy()
+        declino_df['FECHA'] = pd.to_datetime(declino_df['FECHA'], errors='coerce')
+        declino_sorted = declino_df.sort_values('FECHA')
+
+        if declino_sorted['BRUTA_(m3/DC)'].isnull().all():
+            return pd.NaT
+
+        # Encontrar el punto de máxima producción para iniciar el análisis de declino desde allí
+        if not declino_sorted['BRUTA_(m3/DC)'].dropna().empty:
+            max_prod_idx = declino_sorted['BRUTA_(m3/DC)'].idxmax()
+            declino_analysis_start_date = declino_sorted.loc[max_prod_idx, 'FECHA']
+            declino_from_max = declino_sorted[declino_sorted['FECHA'] >= declino_analysis_start_date]
+        else:
+            return pd.NaT # No hay datos de producción válidos
+
+        for _, row in declino_from_max.dropna(subset=['BRUTA_(m3/DC)']).iterrows():
+            if pd.notna(row['BRUTA_(m3/DC)']) and row['BRUTA_(m3/DC)'] <= cutoff:
+                return row['FECHA'] # Devuelve la fecha
+
+        return pd.NaT # Devuelve NaT si nunca se alcanza el umbral
 
 
     def set_fecha_upa_anterior(self, fecha_upa_anterior): # This method seems unused if data passed in init
@@ -724,13 +817,19 @@ class UPAWorkflow:
 
     def run_section_2_save_to_parquet(self):
         self.console.rule("[bold blue]2. Guardar DataFrames de BD y Derivados a Parquet[/bold blue]")
-        self.console.print(f"[cyan]DEBUG: Estado de FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos AL INICIO de run_section_2_save_to_parquet: Shape={getattr(self, 'FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos', pd.DataFrame()).shape}, Vacío={getattr(self, 'FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos', pd.DataFrame()).empty}[/cyan]") # Nuevo DEBUG
-        if not hasattr(self, 'UPS_DIM_COMPLETACION') or self.UPS_DIM_COMPLETACION.empty: # Check if data loaded
-            self.console.print("[red]No hay datos cargados para guardar. Ejecute la sección 1B primero.[/red]")
+        # Permitir guardar aunque no se haya ejecutado 1B, solo requiere que haya algún DataFrame no vacío
+        any_df_to_save = any(
+            isinstance(getattr(self, name, None), pd.DataFrame) and not getattr(self, name).empty
+            for name in [
+                "UPS_DIM_COMPLETACION", "CNS_NOC_PI", "CNS_NOC_TOW_CONTROLES", "CNS_NOC_TOW_PAR_PERD",
+                "UPS_FT_PROY_CONSULTA_ACTIVIDAD", "FDD_CNS_NOC_OW_INSTALACIONES", "UPS_FT_CABEZA_POZO_filtrado",
+                "actividad_aseguramiento", "FDD_CNS_NOC_OW_INSTALACIONES_ultimos", "FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos"
+            ]
+        )
+        if not any_df_to_save:
+            self.console.print("[red]No hay DataFrames cargados para guardar. Ejecute la sección 1 o 1B primero.[/red]")
             return
-
-        # Nota: Los DataFrames cargados desde Excel en la Sección 1 ya fueron guardados a Parquet.
-        # Este diccionario ahora solo contiene DataFrames de la BD y los que son derivados/procesados.
+    
         dataframes_to_save_config = {
             "UPS_DIM_COMPLETACION": self.UPS_DIM_COMPLETACION, 
             "CNS_NOC_PI": self.CNS_NOC_PI,
@@ -745,10 +844,13 @@ class UPAWorkflow:
         }
         
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures_map = {
-                executor.submit(self._save_df_to_parquet, df, name, dataframes_to_save_config): name 
-                for name, df in dataframes_to_save_config.items() if isinstance(df, pd.DataFrame) and not df.empty
-            }
+            futures_map = {}
+            for name in dataframes_to_save_config.keys():
+                df = getattr(self, name, None)
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    futures_map[executor.submit(self._save_df_to_parquet, df, name, dataframes_to_save_config)] = name
+                else:
+                    self.console.print(f"[yellow]DataFrame '{name}' no existe o está vacío. Se omite.[/yellow]")
             for future in tqdm(concurrent.futures.as_completed(futures_map), total=len(futures_map), desc="Guardando a Parquet"):
                 name = futures_map[future]
                 try:
@@ -949,26 +1051,26 @@ class UPAWorkflow:
             self.console.print(f"UPS_DIM_COMPLETACION pozos únicos: {self.UPS_DIM_COMPLETACION['_norm_name'].nunique()}")
             self.console.print(f"NOC_GR_PERFIL_UPA_DECLINO pozos únicos: {self.NOC_GR_PERFIL_UPA_DECLINO['_norm_name'].nunique()}")
             self.console.print(f"CNS_NOC_TOW_CONTROLES pozos únicos: {self.CNS_NOC_TOW_CONTROLES['_norm_name'].nunique()}")
-
+ 
             pozos_completacion = set(self.UPS_DIM_COMPLETACION['_norm_name'].unique())
             pozos_declino = set(self.NOC_GR_PERFIL_UPA_DECLINO['_norm_name'].unique())
-            pozos_controles = set(self.CNS_NOC_TOW_CONTROLES['_norm_name'].unique())
-
-            pozos_validos = pozos_completacion & pozos_declino & pozos_controles
-            self.console.print(f"Pozos con información en los tres DataFrames: {len(pozos_validos)}")
-
+ 
+            # Se modifica la lógica para no requerir que un pozo tenga controles para ser creado.
+            # Esto permite evaluar pozos futuros que aún no están operativos.
+            pozos_validos = pozos_completacion & pozos_declino
+            self.console.print(f"Pozos con información en 'Completacion' y 'Declinos' (requisito mínimo): {len(pozos_validos)}")
+ 
             if len(pozos_validos) == 0:
-                self.console.print("[red]No hay pozos con información en los tres DataFrames. Ejecute la opción D para diagnosticar coincidencias de nombres.[/red]")
+                self.console.print("[red]No se encontraron pozos que existan tanto en el maestro de pozos como en los perfiles de declino.[/red]")
                 self.console.print(f"Ejemplo de nombres en completacion: {list(pozos_completacion)[:5]}")
                 self.console.print(f"Ejemplo de nombres en declino: {list(pozos_declino)[:5]}")
-                self.console.print(f"Ejemplo de nombres en controles: {list(pozos_controles)[:5]}")
                 return
-
+ 
             for normalized_well_name in tqdm(sorted(pozos_validos), desc="Creando objetos Pozo"):
                 pozo_data_completacion = self.UPS_DIM_COMPLETACION[self.UPS_DIM_COMPLETACION['_norm_name'] == normalized_well_name]
                 controles_df = self.CNS_NOC_TOW_CONTROLES[self.CNS_NOC_TOW_CONTROLES['_norm_name'] == normalized_well_name]
                 declino_df = self.NOC_GR_PERFIL_UPA_DECLINO[self.NOC_GR_PERFIL_UPA_DECLINO['_norm_name'] == normalized_well_name]
-                
+ 
                 # Asegurarse que la columna BRUTA exista y no tenga NaN antes de pasarla al constructor
                 if 'BRUTA_(m3/DC)' not in declino_df.columns:
                     if 'PETRÓLEO_(m3/DC)' in declino_df.columns:
@@ -976,12 +1078,12 @@ class UPAWorkflow:
                     else:
                         declino_df['BRUTA_(m3/DC)'] = 0 # O manejar como error si es mandatorio
                 declino_df['BRUTA_(m3/DC)'] = pd.to_numeric(declino_df['BRUTA_(m3/DC)'], errors='coerce').fillna(0)
-
-
-                if declino_df.empty or controles_df.empty:
+ 
+                # Se elimina la condición de que 'controles_df' no esté vacío.
+                if declino_df.empty:
                     skipped_wells_count += 1
                     continue
-
+ 
                 cabeza_de_pozo_df = self.UPS_FT_CABEZA_POZO[self.UPS_FT_CABEZA_POZO['_norm_name'] == normalized_well_name]
                 instalaciones_df = self.FDD_CNS_NOC_OW_INSTALACIONES[self.FDD_CNS_NOC_OW_INSTALACIONES['_norm_name'] == normalized_well_name]
                 interferencias_df = self.GIDI_POZO[self.GIDI_POZO['_norm_name'] == normalized_well_name]
@@ -1020,6 +1122,7 @@ class UPAWorkflow:
                 )
 
                 # La única asignación externa que queda es la fecha_crono, que es correcto.
+                pozo_obj.procesar_datos(upa_actual_df_for_pozo)
                 pozo_obj.set_fecha_crono(pd.Timestamp(fecha_crono_series.iloc[0]) if not fecha_crono_series.empty else pd.NaT)
                 self.lista_pozos.append(pozo_obj)
                 processed_wells_count += 1
@@ -1166,10 +1269,10 @@ class UPAWorkflow:
 
 
         # UPA Plan Logic
-        max_bif_mensuales = [0, 0, 0, 0, 0, 19, 19, 19, 19, 19, 19, 19]
-        max_cbm_mensuales = [0, 0, 0, 0, 0, 16, 16, 16, 16, 16, 16, 16]
-        fecha_inicial_plan = pd.Timestamp('2025-01-01')
-        fecha_final_plan = pd.Timestamp('2025-12-01') # Adjusted to match original logic (12 months for 2025)
+        max_bif_mensuales = [19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19]
+        max_cbm_mensuales = [16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16]
+        fecha_inicial_plan = pd.Timestamp('2025-08-01')
+        fecha_final_plan = pd.Timestamp('2026-12-01') # Adjusted to match original logic (12 months for 2025)
         rango_fechas_plan = pd.date_range(start=fecha_inicial_plan, end=fecha_final_plan, freq='MS')
 
         # UPA sin limite
@@ -1191,12 +1294,12 @@ class UPAWorkflow:
                     p.nombre, p.actividad, p.fecha_capex_ajustada, p.meses_desplazados, p.area, 
                     p.presion_cabeza_actual, p.ultimo_control, p.fecha_ultimo_control, p.estado_actividad, 
                     p.estado_operativo, p.ultimo_paro_rubro, p.ultimo_paro_fecha, p.tiempo_ultimo_paro,
-                    p.fecha_capex, p.bruta_declino_inicial, p.correccion, p.fecha_upa_anterior # bruta_declino_inicial was 0 in original
+                    p.fecha_capex, p.bruta_declino_inicial, p.correccion, p.fecha_upa_anterior, p.fecha_capex_pem
                 ])
         # CORRECCIÓN: Se arregló un error de tipeo en la lista de columnas. Había una coma dentro de 'Tiempo Ultimo Paro,'
         # que causaba que se uniera con la siguiente columna, resultando en 16 nombres de columna para 17 columnas de datos.
         self.df_upa_sin_limite_export = pd.DataFrame(data_upa_sin_limite_export, columns=['Completacion', 'Actividad', 'Fecha Capex Ajustada', 'Meses Desplazados', 'Bloque_Monitoreo_Nombre', 'PRESION_CABEZA', 'BRUTA', 'Fecha_BRUTA', 'Estado Actividad', 'Estado Operativo', 'Ultimo Paro Rubro', 'Ultimo Paro Fecha', 'Tiempo Ultimo Paro',
-        'Fecha Capex Original','BRUTA_DECLINO_INICIAL','Correccion','Fecha UPA Anterior'])
+        'Fecha Capex Original','BRUTA_DECLINO_INICIAL','Correccion','Fecha UPA Anterior', 'Fecha Capex PEM'])
         self.df_upa_sin_limite_export = self.df_upa_sin_limite_export.reset_index(drop=True)
         self.df_upa_sin_limite_export['Index'] = self.df_upa_sin_limite_export.index + 1
 
@@ -1235,7 +1338,8 @@ class UPAWorkflow:
                         p_actual.nombre, p_actual.actividad, p_actual.fecha_capex_ajustada, p_actual.meses_desplazados, p_actual.area, 
                         p_actual.presion_cabeza_actual, p_actual.ultimo_control, p_actual.fecha_ultimo_control, p_actual.estado_actividad, 
                         p_actual.estado_operativo, p_actual.ultimo_paro_rubro, p_actual.ultimo_paro_fecha, p_actual.tiempo_ultimo_paro,
-                        p_actual.fecha_capex, p_actual.bruta_declino_inicial, p_actual.correccion, p_actual.fecha_upa_anterior, p_actual.prioridad, declino_val
+                        p_actual.fecha_capex, p_actual.bruta_declino_inicial, p_actual.correccion, p_actual.fecha_upa_anterior,
+                        p_actual.prioridad, declino_val, p_actual.fecha_capex_pem
                     ])
             
             # Pozos to be deferred
@@ -1261,7 +1365,7 @@ class UPAWorkflow:
                 'Completacion', 'Actividad', 'Fecha Capex Ajustada', 'Meses Desplazados', 'Bloque_Monitoreo_Nombre',
                 'PRESION_CABEZA', 'BRUTA', 'Fecha_BRUTA', 'Estado Actividad', 'Estado Operativo',
                 'Ultimo Paro Rubro', 'Ultimo Paro Fecha', 'Tiempo Ultimo Paro', 'Fecha Capex Original',
-                'BRUTA_DECLINO_INICIAL', 'Correccion', 'Fecha UPA Anterior', 'Index', 'Fecha_declino_oil'
+                'BRUTA_DECLINO_INICIAL', 'Correccion', 'Fecha UPA Anterior', 'Index', 'Fecha_declino_oil', 'Fecha Capex PEM'
             ]
         )
 
@@ -1607,8 +1711,8 @@ class UPAWorkflow:
         for p in self.lista_pozos:
             actividad_upa_map[p.nombre] = p.actividad_UPA
             diagnostico_text = None
-            if hasattr(p, 'diagnostico') and not p.diagnostico.empty and 'DIAGNOSTICO' in p.diagnostico.columns:
-                diagnostico_text = p.diagnostico['DIAGNOSTICO'].iloc[0]
+            if hasattr(p, 'diagnostico_data') and not p.diagnostico_data.empty and 'DIAGNOSTICO' in p.diagnostico_data.columns:
+                diagnostico_text = p.diagnostico_data['DIAGNOSTICO'].iloc[0]
             diagnostico_map[p.nombre] = diagnostico_text
 
         # Añadir las nuevas columnas a los dataframes de los planes usando el mapeo
@@ -1702,6 +1806,122 @@ class UPAWorkflow:
         self.console.print(table)
         self.console.print("\n[green]Reporte mensual de planes UPA completado.[/green]")
 
+    def run_section_show_all_wells_report(self):
+        self.console.rule("[bold blue]Reporte de Todos los Pozos Creados (En Plan y Fuera de Plan)[/bold blue]")
+
+        if not self.lista_pozos:
+            self.console.print("[red]La lista de pozos no ha sido creada. Ejecute la Sección 4 primero.[/red]")
+            return
+        
+        if not hasattr(self, 'df_upa_con_limite') or self.df_upa_con_limite.empty:
+            self.console.print("[yellow]Advertencia: El plan UPA con límite no ha sido generado (Sección 5). No se podrá marcar qué pozos están 'En Plan'.[/yellow]")
+            pozos_en_plan_limitado = set()
+        else:
+            pozos_en_plan_limitado = set(self.df_upa_con_limite['Completacion'].unique())
+
+        report_data = []
+        for p in tqdm(self.lista_pozos, desc="Procesando pozos para el reporte completo"):
+            # Determine status in plan
+            if p.nombre in pozos_en_plan_limitado:
+                status_plan = "En Plan (con límite)"
+            elif pd.notna(p.fecha_capex_ajustada):
+                 fecha_inicial_plan = pd.Timestamp('2025-08-01')
+                 fecha_final_plan = pd.Timestamp('2026-12-01')
+                 if fecha_inicial_plan <= p.fecha_capex_ajustada <= fecha_final_plan:
+                     status_plan = "Fuera de Plan (diferido por límite)"
+                 else:
+                     status_plan = "Fuera de Plan (fuera de rango de fechas)"
+            else:
+                status_plan = "Fuera de Plan (sin fecha CAPEX)"
+
+            # Get diagnosis text
+            diagnostico_text = None
+            if hasattr(p, 'diagnostico_data') and not p.diagnostico_data.empty and 'DIAGNOSTICO' in p.diagnostico_data.columns:
+                 diagnostico_text = p.diagnostico_data['DIAGNOSTICO'].iloc[0]
+
+            report_data.append({
+                'Pozo': p.nombre,
+                'Actividad': p.actividad,
+                'Estado en Plan': status_plan,
+                'Fecha Capex Ajustada': p.fecha_capex_ajustada,
+                'Mes Capex': pd.Timestamp(p.fecha_capex_ajustada).to_period('M') if pd.notna(p.fecha_capex_ajustada) else pd.NaT,
+                'Estado de Actividad': p.estado_actividad,
+                'Estado Operativo': p.estado_operativo,
+                'Fecha UPA Anterior': p.fecha_upa_anterior,
+                'Actividad UPA': p.actividad_UPA,
+                'Diagnostico': diagnostico_text,
+                'Ultimo Control': p.ultimo_control,
+                'Fecha Ultimo Control': p.fecha_ultimo_control,
+                'Area': p.area,
+                'Correccion Capex': p.correccion,
+                'Meses Desplazados': p.meses_desplazados,
+                'Fecha PEM': p.fecha_PEM,
+                'Fecha Capex BIF (s/SE)': p.fecha_capex_BIF,
+                'Fecha Capex CBM (s/SE)': p.fecha_capex_CBM,
+                'Presion Cabeza Actual': p.presion_cabeza_actual,
+                'Presion Linea': p.presion_linea,
+                'Relacion Presion Linea': p.relacion_presion_linea,
+            })
+
+        df_reporte_completo = pd.DataFrame(report_data)
+        
+        df_reporte_completo['Mes Capex'] = pd.to_datetime(df_reporte_completo['Mes Capex'].astype(str), errors='coerce').dt.to_period('M')
+        df_reporte_completo = df_reporte_completo.sort_values(by=['Estado en Plan', 'Mes Capex', 'Pozo']).reset_index(drop=True)
+        df_reporte_completo['Mes Capex'] = df_reporte_completo['Mes Capex'].astype(str).replace('NaT', '')
+
+        try:
+            import os
+            os.makedirs("Resultados", exist_ok=True)
+            output_path = 'Resultados/Reporte_Completo_Pozos_Creados.xlsx'
+            df_reporte_completo.to_excel(output_path, index=False)
+            self.console.print(f"\n[green]Reporte completo de pozos exportado exitosamente a '{output_path}'[/green]")
+        except Exception as e:
+            self.console.print(f"\n[red]Error al exportar el reporte completo a Excel: {e}[/red]")
+
+    def run_section_diagnose_missing_wells(self):
+        self.console.rule("[bold red]F. Diagnóstico de Pozos Descartados[/bold red]")
+        
+        # Check if essential DataFrames are loaded
+        required_dfs = ['UPS_DIM_COMPLETACION', 'NOC_GR_PERFIL_UPA_DECLINO', 'CNS_NOC_TOW_CONTROLES']
+        for df_name in required_dfs:
+            if not hasattr(self, df_name) or getattr(self, df_name).empty:
+                self.console.print(f"[red]Error: DataFrame '{df_name}' no cargado o vacío. Ejecute la sección 3 (Cargar desde Parquet) primero.[/red]")
+                return
+
+        self.console.print("Analizando pozos de 'UPS_DIM_COMPLETACION' contra 'Declinos' y 'Controles'...")
+
+        # --- Normalización y obtención de sets de pozos ---
+        completacion_df = self.UPS_DIM_COMPLETACION.copy()
+        declino_df = self.NOC_GR_PERFIL_UPA_DECLINO.copy()
+        controles_df = self.CNS_NOC_TOW_CONTROLES.copy()
+
+        completacion_df['_norm_name'] = completacion_df['Completacion_Nombre_Corto_Modificado'].apply(self._normalize_well_name)
+        declino_df['_norm_name'] = declino_df['POZO'].apply(self._normalize_well_name)
+        controles_df['_norm_name'] = controles_df['NOMBRE_CORTO_POZO'].apply(self._normalize_well_name)
+
+        pozos_completacion = set(completacion_df['_norm_name'])
+        pozos_declino = set(declino_df['_norm_name'])
+        pozos_controles = set(controles_df['_norm_name'])
+
+        # --- Identificación de pozos descartados ---
+        descartados = []
+        for _, row in tqdm(completacion_df.iterrows(), total=len(completacion_df), desc="Verificando pozos"):
+            norm_name = row['_norm_name']
+            # Se actualiza la lógica para reflejar que solo se requiere que el pozo esté en Declinos.
+            if not (norm_name in pozos_declino):
+                motivos = []
+                if not norm_name in pozos_declino: motivos.append("Falta en Declinos")
+                descartados.append({'Pozo': row['Completacion_Nombre_Corto_Modificado'], 'Motivo_Descarte': ' y '.join(motivos)})
+
+        if not descartados:
+            self.console.print("\n[green]¡Excelente! Todos los pozos de 'UPS_DIM_COMPLETACION' tienen correspondencia en 'Declinos'.[/green]")
+            return
+
+        df_descartados = pd.DataFrame(descartados)
+        output_path = 'Resultados/Reporte_Pozos_Descartados.xlsx'
+        df_descartados.to_excel(output_path, index=False)
+        self.console.print(f"\n[green]Se encontraron {len(df_descartados)} pozos descartados. Reporte guardado en '{output_path}'[/green]")
+
 def conectarse_cns(query):
     """
     Se conecta a Oracle CNS, ejecuta la consulta y devuelve un DataFrame.
@@ -1788,6 +2008,8 @@ def main_menu():
         "7": workflow.run_section_7_calculate_edt_losses,
         "8": workflow.run_section_8_calculate_cierre_upa_losses,
         "C": workflow.run_section_show_upa_monthly_report, # Nueva acción
+        "E": workflow.run_section_show_all_wells_report,
+        "F": workflow.run_section_diagnose_missing_wells,
     }
 
     while True:
@@ -1808,8 +2030,11 @@ def main_menu():
         table.add_row("6", "Procesar Aseguramiento de Pozos")
         table.add_row("7", "Calcular Pérdidas EDT")
         table.add_row("8", "Calcular Pérdidas por Cierre UPA")
-        table.add_row("9", "Ejecutar Todas las Secciones (1-8, excluye A, B, C, D)")
-        table.add_row("9B", "Ejecutar Todas las Secciones desde [bold green]BD[/bold green] (1B, 1, 2-8, excluye A, B, C, D)")
+        table.add_row("C", "Mostrar Reporte Mensual de Pozos [bold green]EN PLAN[/bold green] UPA")
+        table.add_row("E", "Generar Reporte de [bold yellow]TODOS[/bold yellow] los Pozos (En Plan y Fuera de Plan)")
+        table.add_row("F", "Generar Reporte de Pozos [bold red]DESCARTADOS[/bold red] (Diagnóstico)")
+        table.add_row("9", "Ejecutar Flujo Completo (desde [bold yellow]Excel[/bold yellow])")
+        table.add_row("9B", "Ejecutar Flujo Completo (desde [bold green]BD[/bold green])")
         table.add_row("0", "Salir")
         
         console.print(table)

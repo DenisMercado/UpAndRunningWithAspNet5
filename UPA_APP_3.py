@@ -80,6 +80,16 @@ class pozo:
         self.tiempo_cierre_actividad=None
         self.actividad_UPA=None
 
+        # --- INICIO: Nuevos atributos para calidad de declino ---
+        self.declino_valor_control = None
+        self.diferencia_declino_control = None
+        self.calidad_declino = None
+        # --- FIN: Nuevos atributos para calidad de declino ---
+
+        # --- INICIO: Nuevos atributos para análisis de interferencias ---
+        self.interferencia_pre_capex_cercana = None
+        self.interferencia_post_capex_cercana = None
+        # --- FIN: Nuevos atributos para análisis de interferencias ---
  
     def procesar_datos(self, UPA_actual_df_for_pozo):
         """Ejecuta toda la lógica de cálculo para el pozo después de la inicialización."""
@@ -96,6 +106,31 @@ class pozo:
                         self.ultimo_control = controles_A.loc[ultimo_control_idx, 'BRUTA']
                         self.fecha_ultimo_control = controles_A.loc[ultimo_control_idx, 'TEST_DT']
                         self.orificio_ult_control = controles_A.loc[ultimo_control_idx, 'CHOKE_SIZE']
+
+        # --- INICIO: Nueva Lógica de Calidad de Declino ---
+        if pd.notna(self.ultimo_control) and not self.declino.empty and 'BRUTA_(m3/DC)' in self.declino.columns:
+            # Tomar el primer valor de declino (más antiguo)
+            declino_sorted = self.declino.sort_values('FECHA')
+            primer_valor_declino = declino_sorted['BRUTA_(m3/DC)'].iloc[0] if not declino_sorted.empty else None
+            self.declino_valor_control = primer_valor_declino
+        
+            if primer_valor_declino is not None and primer_valor_declino > 0:
+                diff = abs(self.ultimo_control - primer_valor_declino)
+                diff_percent = (diff / primer_valor_declino) * 100
+                self.diferencia_declino_control = diff_percent
+        
+                if diff_percent <= 20:
+                    self.calidad_declino = 'Buena'
+                elif 20 < diff_percent <= 50:
+                    self.calidad_declino = 'Regular'
+                else:
+                    self.calidad_declino = 'Mala'
+            else:
+                self.calidad_declino = 'No se pudo calcular'
+        else:
+            self.calidad_declino = 'No se pudo calcular'
+        # --- FIN: Nueva Lógica de Calidad de Declino ---
+        
 
         # Asignar actividad y corte_produccion (AHORA FUNCIONARÁ GRACIAS A LA LIMPIEZA)
         # Se robustece la lógica para asegurar que siempre se asigne una actividad y un corte de producción.
@@ -203,6 +238,11 @@ class pozo:
 
         raw_cbm_date = self._calculate_generic_capex(35)
         self.fecha_capex_CBM, _ = self._apply_interference_correction(raw_cbm_date)
+
+        # --- PASO 6: ANÁLISIS FINAL DE INTERFERENCIAS CERCANAS ---
+        # Se ejecuta al final para asegurar que fecha_capex_ajustada esté completamente calculada.
+        self._analizar_interferencias_cercanas()
+
 
     def _apply_interference_correction(self, base_date):
         """
@@ -327,6 +367,57 @@ class pozo:
 
         return pd.NaT # Devuelve NaT si nunca se alcanza el umbral
 
+    def _analizar_interferencias_cercanas(self):
+        """
+        Identifica la interferencia más cercana antes y después de la fecha CAPEX ajustada
+        y guarda sus detalles para análisis.
+        """
+        if pd.isna(self.fecha_capex_ajustada) or self.interferencias is None or self.interferencias.empty:
+            return
+
+        fecha_ref = pd.Timestamp(self.fecha_capex_ajustada)
+        
+        # Asegurarse de que las columnas necesarias existen y tienen el tipo correcto
+        if 'fecha_interferencia' not in self.interferencias.columns:
+            return
+        self.interferencias['fecha_interferencia'] = pd.to_datetime(self.interferencias['fecha_interferencia'], errors='coerce')
+        
+        # Interferencias ANTES (o en) la fecha de referencia
+        pre_interf = self.interferencias[self.interferencias['fecha_interferencia'] <= fecha_ref].copy()
+        if not pre_interf.empty:
+            # La más cercana es la que tiene la fecha más reciente
+            closest_pre_idx = pre_interf['fecha_interferencia'].idxmax()
+            closest_pre = pre_interf.loc[closest_pre_idx]
+            self.interferencia_pre_capex_cercana = {
+                'pozo': closest_pre.get('padre'), 'fecha': closest_pre.get('fecha_interferencia'), 'desplazamiento': closest_pre.get('Meses_Desplazados')
+            }
+
+        # Interferencias DESPUÉS de la fecha de referencia
+        post_interf = self.interferencias[self.interferencias['fecha_interferencia'] > fecha_ref].copy()
+        if not post_interf.empty:
+            # La más cercana es la que tiene la fecha más temprana
+            closest_post_idx = post_interf['fecha_interferencia'].idxmin()
+            closest_post = post_interf.loc[closest_post_idx]
+            self.interferencia_post_capex_cercana = {
+                'pozo': closest_post.get('padre'), 'fecha': closest_post.get('fecha_interferencia'), 'desplazamiento': closest_post.get('Meses_Desplazados')
+            }
+
+    def search_declino(self, fecha_busqueda):
+        """
+        Busca en la curva de declino del pozo el valor de producción bruta (`BRUTA_(m3/DC)`)
+        para la fecha más cercana (igual o anterior) a la `fecha_busqueda`.
+        """
+        if self.declino is None or self.declino.empty or 'FECHA' not in self.declino.columns or 'BRUTA_(m3/DC)' not in self.declino.columns:
+            return None
+        
+        # Asegurar que fecha_busqueda es un Timestamp para la comparación
+        fecha_busqueda_ts = pd.Timestamp(fecha_busqueda)
+        
+        relevant_declino = self.declino[self.declino['FECHA'] <= fecha_busqueda_ts]
+        if not relevant_declino.empty:
+            closest_date_row = relevant_declino.loc[relevant_declino['FECHA'].idxmax()]
+            return closest_date_row['BRUTA_(m3/DC)']
+        return None
 
     def set_fecha_upa_anterior(self, fecha_upa_anterior): # This method seems unused if data passed in init
         self.fecha_upa_anterior = fecha_upa_anterior
@@ -586,7 +677,8 @@ class UPAWorkflow:
                 # Configuración de columnas a leer (reutilizada de la carga de Excel)
                 columns_to_read_config = {
                     "UPS_DIM_COMPLETACION": ['Completacion_Nombre_Corto', 'Metodo_Produccion_Actual_Cd', 'Bloque_Monitoreo_Nombre', 'Fecha_Inicio_Produccion_Dt'],
-                    "UPS_FT_DLY_SENSORES_PRESIONES_POZOS": ['Boca_Pozo_Nombre_Oficial', 'Fecha_Hora_Dttm', 'Presion_Cabeza_Pozo_Num', 'Presion_Linea_Produccion_Num'],
+                    "CNS_GRALO_PI": ['NOMBRE_POZO', 'FECHA', 'PRESION_CABEZA', 'PRESION_LINEA'],
+                    "CNS_NOC_PI": ['NOMBRE_POZO', 'FECHA', 'PRESION_CABEZA', 'PRESION_LINEA'],
                     "CNS_NOC_TOW_CONTROLES": ['NOMBRE_CORTO_POZO', 'TEST_DT', 'TEST_PURP_CD', 'BRUTA', 'CHOKE_SIZE','PROD_OIL_24'],
                     "CNS_NOC_TOW_PAR_PERD": ['NOMBRE_CORTO_POZO', 'PROD_DT', 'HORAS_DE_PARO', 'RUBRO', 'GRAN_RUBRO','PERDIDA_PETROLEO'],
                     "NOC_GR_PERFIL_UPA_DECLINO": ['POZO', 'FECHA', 'BRUTA_(m3/DC)', 'PETRÓLEO_(m3/DC)', 'AGUA_(m3/DC)'],
@@ -601,11 +693,13 @@ class UPAWorkflow:
                     'UPS_DIM_COMPLETACION': 'teradata', 
                     'UPS_FT_PROY_CONSULTA_ACTIVIDAD': 'teradata',
                     'UPS_FT_CABEZA_POZO': 'teradata',
-                    'UPS_FT_DLY_SENSORES_PRESIONES_POZOS': 'teradata',
+#                    'UPS_FT_DLY_SENSORES_PRESIONES_POZOS': 'teradata',
                     'CNS_NOC_TOW_CONTROLES': 'cns', 'CNS_NOC_TOW_PAR_PERD': 'cns',
 #                'NOC_GR_PERFIL_UPA_DECLINO': 'cns', # Asumiendo que NOC es de CNS
                     'CNS_NOC_OW_INSTALACIONES': 'cns', # Asumiendo que FDD_CNS es de CNS
-                    #'FDD_CNS_GRALO_FDP_DIAGNOSTICO': 'cns' # Asumiendo que FDD_CNS es de CNS
+                    #'FDD_CNS_GRALO_FDP_DIAGNOSTICO': 'cns' # Asumiendo que FDD_CNS es de CNS,
+                    'CNS_GRALO_PI': 'cns',
+                    'CNS_NOC_PI': 'cns'
                 }
 
                 # Generar y ejecutar consultas
@@ -661,6 +755,18 @@ class UPAWorkflow:
                             setattr(self, df_name, df)
                             self.console.print(f"[green]OK: DataFrame '{df_name}' cargado desde TERADATA. Shape: {df.shape}[/green]")
                             continue # continue es importante para saltar a la siguiente iteración del bucle
+                        elif df_name == 'CNS_GRALO_PI' and db_type == 'cns':
+                            table_name = f"SAHARA.{df_name}"
+                            # Filtro optimizado similar a Power BI: Región y Fecha > 01/12/2025
+                            query = f"SELECT {columns_str} FROM {table_name} WHERE (REGION_DBU = 'Area Este Norte' OR REGION_DBU = 'Area Este Sur') AND FECHA > TO_DATE('2025-12-01', 'YYYY-MM-DD')"
+                            self.console.print(f"\n[cyan]Ejecutando en CNS (Consulta Optimizada):[/cyan] {query}")
+                            df = conectarse_cns(query)
+                        elif df_name == 'CNS_NOC_PI' and db_type == 'cns':
+                            table_name = f"SAHARA.{df_name}"
+                            # Filtro optimizado para CNS_NOC_PI: Región y Fecha > 01/12/2025
+                            query = f"SELECT {columns_str} FROM {table_name} WHERE (REGION_DBU = 'Area Este Norte' OR REGION_DBU = 'Area Este Sur') AND FECHA > TO_DATE('2025-12-01', 'YYYY-MM-DD')"
+                            self.console.print(f"\n[cyan]Ejecutando en CNS (Consulta Optimizada):[/cyan] {query}")
+                            df = conectarse_cns(query)
                         else:
                             # Lógica general para las demás tablas
                             if db_type == 'cns':
@@ -675,11 +781,33 @@ class UPAWorkflow:
                                 df = conectarse_teradata(query)
                         
                         setattr(self, df_name, df)
+                        
+                        # Corrección: Asignar CNS_NOC_OW_INSTALACIONES a la variable esperada FDD_CNS_NOC_OW_INSTALACIONES
+                        if df_name == 'CNS_NOC_OW_INSTALACIONES':
+                            self.FDD_CNS_NOC_OW_INSTALACIONES = df
+                            
                         self.console.print(f"[green]OK: DataFrame '{df_name}' cargado desde {db_type.upper()}. Shape: {df.shape}[/green]")
 
                     except Exception as e:
                         self.console.print(f"[red]Error al cargar '{df_name}' desde la base de datos: {e}[/red]")
-                        setattr(self, df_name, pd.DataFrame()) # Asignar DF vacío en caso de error
+                        
+                        # Fallback: Intentar cargar desde Excel si falla la BD
+                        excel_path = f"datos_prueba/{df_name}.xlsx"
+                        self.console.print(f"[yellow]Fallo BD. Intentando cargar respaldo local: {excel_path}[/yellow]")
+                        
+                        try:
+                            if os.path.exists(excel_path):
+                                df_fallback = pd.read_excel(excel_path)
+                                setattr(self, df_name, df_fallback)
+                                if df_name == 'CNS_NOC_OW_INSTALACIONES':
+                                    self.FDD_CNS_NOC_OW_INSTALACIONES = df_fallback
+                                self.console.print(f"[green]OK: DataFrame '{df_name}' cargado desde Excel (Fallback). Shape: {df_fallback.shape}[/green]")
+                            else:
+                                self.console.print(f"[red]No se encontró el archivo de respaldo: {excel_path}[/red]")
+                                setattr(self, df_name, pd.DataFrame())
+                        except Exception as e_excel:
+                            self.console.print(f"[red]Error al cargar Excel de respaldo: {e_excel}[/red]")
+                            setattr(self, df_name, pd.DataFrame())
 
                 self.console.print("[green]Carga desde bases de datos completada.[/green]")
                 self.console.print("[yellow]Ejecutando post-procesamiento general...[/yellow]")
@@ -840,7 +968,8 @@ class UPAWorkflow:
             "UPS_FT_CABEZA_POZO_filtrado": self.UPS_FT_CABEZA_POZO_filtrado,
             "actividad_aseguramiento": self.actividad_aseguramiento,
             "FDD_CNS_NOC_OW_INSTALACIONES_ultimos": self.FDD_CNS_NOC_OW_INSTALACIONES_ultimos,
-            "FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos": self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos
+            "FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos": self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos,
+            "CNS_GRALO_PI": self.CNS_GRALO_PI
         }
         
         with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -884,7 +1013,7 @@ class UPAWorkflow:
             "UPS_DIM_COMPLETACION", "CNS_NOC_PI", "CNS_NOC_TOW_CONTROLES", "CNS_NOC_TOW_PAR_PERD",
             "NOC_GR_PERFIL_UPA_DECLINO", "GIDI_POZO", "PA_2025_Activos", "UPS_FT_PROY_CONSULTA_ACTIVIDAD",
             "FDD_CNS_NOC_OW_INSTALACIONES", "UPS_FT_CABEZA_POZO_filtrado", "actividad_aseguramiento",
-            "ULTIMA_UPA", "UPA_actual", "FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos"
+            "ULTIMA_UPA", "UPA_actual", "FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos","CNS_GRALO_PI"
         ]
 
         # loaded_data = {} # This variable is not used
@@ -913,6 +1042,20 @@ class UPAWorkflow:
         if hasattr(self, 'UPS_FT_CABEZA_POZO_filtrado') and not self.UPS_FT_CABEZA_POZO_filtrado.empty:
             self.UPS_FT_CABEZA_POZO = self.UPS_FT_CABEZA_POZO_filtrado
         
+        # Verificación y normalización de CNS_GRALO_PI si falta _norm_name
+        if hasattr(self, 'CNS_GRALO_PI') and not self.CNS_GRALO_PI.empty:
+            if '_norm_name' not in self.CNS_GRALO_PI.columns:
+                if 'NOMBRE_POZO' in self.CNS_GRALO_PI.columns:
+                    self.console.print("[yellow]Agregando columna '_norm_name' a CNS_GRALO_PI...[/yellow]")
+                    self.CNS_GRALO_PI['_norm_name'] = self.CNS_GRALO_PI['NOMBRE_POZO'].apply(self._normalize_well_name)
+        
+        # Verificación y normalización de CNS_NOC_PI si falta _norm_name (Respaldo de PI)
+        if hasattr(self, 'CNS_NOC_PI') and not self.CNS_NOC_PI.empty:
+            if '_norm_name' not in self.CNS_NOC_PI.columns:
+                if 'NOMBRE_POZO' in self.CNS_NOC_PI.columns:
+                    self.console.print("[yellow]Agregando columna '_norm_name' a CNS_NOC_PI...[/yellow]")
+                    self.CNS_NOC_PI['_norm_name'] = self.CNS_NOC_PI['NOMBRE_POZO'].apply(self._normalize_well_name)
+
         self.console.print("[green]Sección 3: Carga desde Parquet completada.[/green]")
 
     def run_section_show_parquet_df_info(self):
@@ -966,7 +1109,7 @@ class UPAWorkflow:
             'UPS_FT_CABEZA_POZO': 'Nombre_Boca_Pozo_Oficial', # Creada en post-procesamiento
             'FDD_CNS_NOC_OW_INSTALACIONES': 'NOMBRE_POZO',
             'GIDI_POZO': 'padre',
-            'CNS_NOC_PI': 'NOMBRE_CORTO_POZO',
+            'CNS_NOC_PI': 'NOMBRE_POZO',
             'CNS_NOC_TOW_PAR_PERD': 'NOMBRE_CORTO_POZO',
             'UPS_FT_PROY_CONSULTA_ACTIVIDAD': 'Sigla_Pozo_Cd',
             'ULTIMA_UPA': 'NOMBRE POZO',
@@ -1010,9 +1153,9 @@ class UPAWorkflow:
             warnings.simplefilter("ignore")
             required_dfs = ['UPS_DIM_COMPLETACION', 'CNS_NOC_TOW_CONTROLES', 'NOC_GR_PERFIL_UPA_DECLINO', 
                             'UPS_FT_CABEZA_POZO', 'FDD_CNS_NOC_OW_INSTALACIONES', 'GIDI_POZO', 
-                            'CNS_NOC_PI', 'CNS_NOC_TOW_PAR_PERD', 'UPS_FT_PROY_CONSULTA_ACTIVIDAD',
-                            'ULTIMA_UPA', 'UPA_actual', 'FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos']
-        
+                            #'CNS_NOC_PI', 'CNS_NOC_TOW_PAR_PERD', 'UPS_FT_PROY_CONSULTA_ACTIVIDAD',
+                            'ULTIMA_UPA', 'UPA_actual', 'FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos','CNS_GRALO_PI']
+
             for df_name in required_dfs:
                 if not hasattr(self, df_name) or getattr(self, df_name).empty:
                     self.console.print(f"[red]Error: DataFrame '{df_name}' no cargado o vacío. Ejecute secciones anteriores.[/red]")
@@ -1040,12 +1183,13 @@ class UPAWorkflow:
             self.UPS_FT_CABEZA_POZO['_norm_name'] = self.UPS_FT_CABEZA_POZO['Nombre_Boca_Pozo_Oficial'].apply(self._normalize_well_name)
             self.FDD_CNS_NOC_OW_INSTALACIONES['_norm_name'] = self.FDD_CNS_NOC_OW_INSTALACIONES['NOMBRE_POZO'].apply(self._normalize_well_name)
             self.GIDI_POZO['_norm_name'] = self.GIDI_POZO['padre'].apply(self._normalize_well_name)
-            self.CNS_NOC_PI['_norm_name'] = self.CNS_NOC_PI['NOMBRE_CORTO_POZO'].apply(self._normalize_well_name)
+            self.CNS_NOC_PI['_norm_name'] = self.CNS_NOC_PI['NOMBRE_POZO'].apply(self._normalize_well_name)
             self.CNS_NOC_TOW_PAR_PERD['_norm_name'] = self.CNS_NOC_TOW_PAR_PERD['NOMBRE_CORTO_POZO'].apply(self._normalize_well_name)
             self.UPS_FT_PROY_CONSULTA_ACTIVIDAD['_norm_name'] = self.UPS_FT_PROY_CONSULTA_ACTIVIDAD['Sigla_Pozo_Cd'].apply(self._normalize_well_name)
             self.ULTIMA_UPA['_norm_name'] = self.ULTIMA_UPA['NOMBRE POZO'].apply(self._normalize_well_name)
             self.UPA_actual['_norm_name'] = self.UPA_actual['NOMBRE POZO'].apply(self._normalize_well_name)
             self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos['_norm_name'] = self.FDD_CNS_GRALO_FDP_DIAGNOSTICO_ultimos['NOMBRE_CORTO_POZO'].apply(self._normalize_well_name)
+            self.CNS_GRALO_PI['_norm_name'] = self.CNS_GRALO_PI['NOMBRE_POZO'].apply(self._normalize_well_name)
 
             # Diagnóstico rápido
             self.console.print(f"UPS_DIM_COMPLETACION pozos únicos: {self.UPS_DIM_COMPLETACION['_norm_name'].nunique()}")
@@ -1087,7 +1231,17 @@ class UPAWorkflow:
                 cabeza_de_pozo_df = self.UPS_FT_CABEZA_POZO[self.UPS_FT_CABEZA_POZO['_norm_name'] == normalized_well_name]
                 instalaciones_df = self.FDD_CNS_NOC_OW_INSTALACIONES[self.FDD_CNS_NOC_OW_INSTALACIONES['_norm_name'] == normalized_well_name]
                 interferencias_df = self.GIDI_POZO[self.GIDI_POZO['_norm_name'] == normalized_well_name]
-                perfil_presiones_df = self.CNS_NOC_PI[self.CNS_NOC_PI['_norm_name'] == normalized_well_name]
+                
+                # --- LÓGICA UNIFICADA DE PRESIONES (PI) ---
+                # Prioridad 1: CNS_GRALO_PI
+                perfil_presiones_df = pd.DataFrame()
+                if hasattr(self, 'CNS_GRALO_PI') and not self.CNS_GRALO_PI.empty:
+                    perfil_presiones_df = self.CNS_GRALO_PI[self.CNS_GRALO_PI['_norm_name'] == normalized_well_name]
+                
+                # Prioridad 2: CNS_NOC_PI (Si GRALO está vacío o no tiene datos para este pozo)
+                if perfil_presiones_df.empty and hasattr(self, 'CNS_NOC_PI') and not self.CNS_NOC_PI.empty:
+                    perfil_presiones_df = self.CNS_NOC_PI[self.CNS_NOC_PI['_norm_name'] == normalized_well_name]
+
                 downtime_df = self.CNS_NOC_TOW_PAR_PERD[self.CNS_NOC_TOW_PAR_PERD['_norm_name'] == normalized_well_name]
                 fecha_crono_series = self.UPS_FT_PROY_CONSULTA_ACTIVIDAD.loc[
                     self.UPS_FT_PROY_CONSULTA_ACTIVIDAD['_norm_name'] == normalized_well_name, 'Fecha_Inicio_Dttm'
@@ -1220,6 +1374,13 @@ class UPAWorkflow:
 
     def run_section_5_create_upa_plans(self):
         self.console.rule("[bold blue]5. Creación de Planes UPA[/bold blue]")
+        
+        # Helper para extraer detalles de interferencia de forma segura
+        def get_interf_details(interf_dict):
+            if interf_dict:
+                return interf_dict.get('pozo'), interf_dict.get('fecha'), interf_dict.get('desplazamiento')
+            return None, pd.NaT, None
+
         if not self.lista_pozos:
             self.console.print("[red]Lista de pozos no creada. Ejecute la sección 4 primero.[/red]")
             return
@@ -1249,14 +1410,26 @@ class UPAWorkflow:
         df_pozos_data = []
         for p_list in [pozos_bif_ordenados, pozos_cbm_ordenados]:
             for p in p_list:
+                interf_pre_pozo, interf_pre_fecha, interf_pre_despl = get_interf_details(p.interferencia_pre_capex_cercana)
+                interf_post_pozo, interf_post_fecha, interf_post_despl = get_interf_details(p.interferencia_post_capex_cercana)
+
                 df_pozos_data.append({
                     'Nombre': p.nombre, 'Presion de Cabeza': p.presion_cabeza_actual, 
                     'Relacion de Presion de Linea': p.relacion_presion_linea, 'Fecha Capex': p.fecha_capex, 
                     'Fecha Crono': p.fecha_crono, 'Fecha Capex Ajustada': p.fecha_capex_ajustada, 
                     'Estado de Actividad': p.estado_actividad, 'Estado Operativo': p.estado_operativo, 
-                    'Ultimo Control': p.ultimo_control, 'Orificio Ultimo Control': p.orificio_ult_control, 
+                    'Ultimo Control': p.ultimo_control,
+                    'Calidad Declino': p.calidad_declino, # Nueva columna
+                    'Diferencia Declino (%)': p.diferencia_declino_control, # Nueva columna
+                    'Orificio Ultimo Control': p.orificio_ult_control, 
                     'Fecha Ultimo Control': p.fecha_ultimo_control, 'Area': p.area, 
-                    'Actividad': p.actividad, 'Campana': p.campana, 'Fecha ultima UPA': p.fecha_upa_anterior
+                    'Actividad': p.actividad, 'Campana': p.campana, 'Fecha ultima UPA': p.fecha_upa_anterior,
+                    'Interf_Pre_Pozo': interf_pre_pozo,
+                    'Interf_Pre_Fecha': interf_pre_fecha,
+                    'Interf_Pre_Desplazamiento': interf_pre_despl,
+                    'Interf_Post_Pozo': interf_post_pozo,
+                    'Interf_Post_Fecha': interf_post_fecha,
+                    'Interf_Post_Desplazamiento': interf_post_despl
                 })
         df_pozos_export = pd.DataFrame(df_pozos_data)
         try:
@@ -1290,16 +1463,22 @@ class UPAWorkflow:
         all_pozos_ordenados_sl = pozos_bif_ordenados + pozos_cbm_ordenados
         for p in all_pozos_ordenados_sl:
             if pd.notna(p.fecha_capex_ajustada) and fecha_inicial_plan <= pd.Timestamp(p.fecha_capex_ajustada) <= fecha_final_plan: # Ensure it's within plan range
+                 interf_pre_pozo, interf_pre_fecha, interf_pre_despl = get_interf_details(p.interferencia_pre_capex_cercana)
+                 interf_post_pozo, interf_post_fecha, interf_post_despl = get_interf_details(p.interferencia_post_capex_cercana)
                  data_upa_sin_limite_export.append([
                     p.nombre, p.actividad, p.fecha_capex_ajustada, p.meses_desplazados, p.area, 
                     p.presion_cabeza_actual, p.ultimo_control, p.fecha_ultimo_control, p.estado_actividad, 
                     p.estado_operativo, p.ultimo_paro_rubro, p.ultimo_paro_fecha, p.tiempo_ultimo_paro,
-                    p.fecha_capex, p.bruta_declino_inicial, p.correccion, p.fecha_upa_anterior, p.fecha_capex_pem
+                    p.fecha_capex, p.bruta_declino_inicial, p.correccion, p.fecha_upa_anterior, p.fecha_capex_pem,
+                    p.calidad_declino, p.diferencia_declino_control, # Nuevas columnas
+                    interf_pre_pozo, interf_pre_fecha, interf_pre_despl,
+                    interf_post_pozo, interf_post_fecha, interf_post_despl
                 ])
-        # CORRECCIÓN: Se arregló un error de tipeo en la lista de columnas. Había una coma dentro de 'Tiempo Ultimo Paro,'
-        # que causaba que se uniera con la siguiente columna, resultando en 16 nombres de columna para 17 columnas de datos.
-        self.df_upa_sin_limite_export = pd.DataFrame(data_upa_sin_limite_export, columns=['Completacion', 'Actividad', 'Fecha Capex Ajustada', 'Meses Desplazados', 'Bloque_Monitoreo_Nombre', 'PRESION_CABEZA', 'BRUTA', 'Fecha_BRUTA', 'Estado Actividad', 'Estado Operativo', 'Ultimo Paro Rubro', 'Ultimo Paro Fecha', 'Tiempo Ultimo Paro',
-        'Fecha Capex Original','BRUTA_DECLINO_INICIAL','Correccion','Fecha UPA Anterior', 'Fecha Capex PEM'])
+        # CORRECCIÓN: Se arregló un error de tipeo en la lista de columnas (había una coma extra) y se añadieron las nuevas.
+        columnas_sin_limite = ['Completacion', 'Actividad', 'Fecha Capex Ajustada', 'Meses Desplazados', 'Bloque_Monitoreo_Nombre', 'PRESION_CABEZA', 'BRUTA', 'Fecha_BRUTA', 'Estado Actividad', 'Estado Operativo', 'Ultimo Paro Rubro', 'Ultimo Paro Fecha', 'Tiempo Ultimo Paro',
+                               'Fecha Capex Original','BRUTA_DECLINO_INICIAL','Correccion','Fecha UPA Anterior', 'Fecha Capex PEM', 'Calidad Declino', 'Diferencia Declino (%)',
+                               'Interf_Pre_Pozo', 'Interf_Pre_Fecha', 'Interf_Pre_Desplazamiento', 'Interf_Post_Pozo', 'Interf_Post_Fecha', 'Interf_Post_Desplazamiento']
+        self.df_upa_sin_limite_export = pd.DataFrame(data_upa_sin_limite_export, columns=columnas_sin_limite)
         self.df_upa_sin_limite_export = self.df_upa_sin_limite_export.reset_index(drop=True)
         self.df_upa_sin_limite_export['Index'] = self.df_upa_sin_limite_export.index + 1
 
@@ -1334,12 +1513,15 @@ class UPAWorkflow:
             for p_list_actual in [bif_this_month_sl, cbm_this_month_sl]:
                 for p_actual in p_list_actual:
                     declino_val = p_actual.search_declino(p_actual.fecha_capex_ajustada)
+                    interf_pre_pozo, interf_pre_fecha, interf_pre_despl = get_interf_details(p_actual.interferencia_pre_capex_cercana)
+                    interf_post_pozo, interf_post_fecha, interf_post_despl = get_interf_details(p_actual.interferencia_post_capex_cercana)
                     data_upa_con_limite_export.append([
                         p_actual.nombre, p_actual.actividad, p_actual.fecha_capex_ajustada, p_actual.meses_desplazados, p_actual.area, 
                         p_actual.presion_cabeza_actual, p_actual.ultimo_control, p_actual.fecha_ultimo_control, p_actual.estado_actividad, 
                         p_actual.estado_operativo, p_actual.ultimo_paro_rubro, p_actual.ultimo_paro_fecha, p_actual.tiempo_ultimo_paro,
                         p_actual.fecha_capex, p_actual.bruta_declino_inicial, p_actual.correccion, p_actual.fecha_upa_anterior,
-                        p_actual.prioridad, declino_val, p_actual.fecha_capex_pem
+                        p_actual.prioridad, declino_val, p_actual.fecha_capex_pem, p_actual.calidad_declino, p_actual.diferencia_declino_control, # Nuevas columnas
+                        interf_pre_pozo, interf_pre_fecha, interf_pre_despl, interf_post_pozo, interf_post_fecha, interf_post_despl
                     ])
             
             # Pozos to be deferred
@@ -1359,14 +1541,17 @@ class UPAWorkflow:
                 p_final_verif.verificar_interferencias(p_final_verif.fecha_capex_ajustada)
 
 
+        columnas_con_limite = [
+            'Completacion', 'Actividad', 'Fecha Capex Ajustada', 'Meses Desplazados', 'Bloque_Monitoreo_Nombre',
+            'PRESION_CABEZA', 'BRUTA', 'Fecha_BRUTA', 'Estado Actividad', 'Estado Operativo',
+            'Ultimo Paro Rubro', 'Ultimo Paro Fecha', 'Tiempo Ultimo Paro', 'Fecha Capex Original',
+            'BRUTA_DECLINO_INICIAL', 'Correccion', 'Fecha UPA Anterior', 'Index', 'Fecha_declino_oil', 'Fecha Capex PEM',
+            'Calidad Declino', 'Diferencia Declino (%)',
+            'Interf_Pre_Pozo', 'Interf_Pre_Fecha', 'Interf_Pre_Desplazamiento', 'Interf_Post_Pozo', 'Interf_Post_Fecha', 'Interf_Post_Desplazamiento'
+        ]
         self.df_upa_con_limite = pd.DataFrame(
             data_upa_con_limite_export,
-            columns=[
-                'Completacion', 'Actividad', 'Fecha Capex Ajustada', 'Meses Desplazados', 'Bloque_Monitoreo_Nombre',
-                'PRESION_CABEZA', 'BRUTA', 'Fecha_BRUTA', 'Estado Actividad', 'Estado Operativo',
-                'Ultimo Paro Rubro', 'Ultimo Paro Fecha', 'Tiempo Ultimo Paro', 'Fecha Capex Original',
-                'BRUTA_DECLINO_INICIAL', 'Correccion', 'Fecha UPA Anterior', 'Index', 'Fecha_declino_oil', 'Fecha Capex PEM'
-            ]
+            columns=columnas_con_limite
         )
 
         try:
@@ -1819,6 +2004,12 @@ class UPAWorkflow:
         else:
             pozos_en_plan_limitado = set(self.df_upa_con_limite['Completacion'].unique())
 
+        # Helper para extraer detalles de interferencia de forma segura
+        def get_interf_details(interf_dict):
+            if interf_dict:
+                return interf_dict.get('pozo'), interf_dict.get('fecha'), interf_dict.get('desplazamiento')
+            return None, pd.NaT, None
+
         report_data = []
         for p in tqdm(self.lista_pozos, desc="Procesando pozos para el reporte completo"):
             # Determine status in plan
@@ -1838,6 +2029,9 @@ class UPAWorkflow:
             diagnostico_text = None
             if hasattr(p, 'diagnostico_data') and not p.diagnostico_data.empty and 'DIAGNOSTICO' in p.diagnostico_data.columns:
                  diagnostico_text = p.diagnostico_data['DIAGNOSTICO'].iloc[0]
+
+            interf_pre_pozo, interf_pre_fecha, interf_pre_despl = get_interf_details(p.interferencia_pre_capex_cercana)
+            interf_post_pozo, interf_post_fecha, interf_post_despl = get_interf_details(p.interferencia_post_capex_cercana)
 
             report_data.append({
                 'Pozo': p.nombre,
@@ -1861,6 +2055,12 @@ class UPAWorkflow:
                 'Presion Cabeza Actual': p.presion_cabeza_actual,
                 'Presion Linea': p.presion_linea,
                 'Relacion Presion Linea': p.relacion_presion_linea,
+                'Interf_Pre_Pozo': interf_pre_pozo,
+                'Interf_Pre_Fecha': interf_pre_fecha,
+                'Interf_Pre_Desplazamiento': interf_pre_despl,
+                'Interf_Post_Pozo': interf_post_pozo,
+                'Interf_Post_Fecha': interf_post_fecha,
+                'Interf_Post_Desplazamiento': interf_post_despl,
             })
 
         df_reporte_completo = pd.DataFrame(report_data)
@@ -1877,6 +2077,64 @@ class UPAWorkflow:
             self.console.print(f"\n[green]Reporte completo de pozos exportado exitosamente a '{output_path}'[/green]")
         except Exception as e:
             self.console.print(f"\n[red]Error al exportar el reporte completo a Excel: {e}[/red]")
+
+    def run_section_show_decline_quality_report(self):
+        self.console.rule("[bold blue]Reporte de Calidad de Declino[/bold blue]")
+        if not self.lista_pozos:
+            self.console.print("[red]Lista de pozos no creada. Ejecute la sección 4 primero.[/red]")
+            return
+
+        report_data = []
+        for p in self.lista_pozos:
+            if hasattr(p, 'calidad_declino') and p.calidad_declino in ['Mala', 'Regular']:
+                report_data.append({
+                    'Pozo': p.nombre,
+                    'Calidad Declino': p.calidad_declino,
+                    'Último Control (Bruta)': p.ultimo_control,
+                    'Fecha Último Control': p.fecha_ultimo_control,
+                    'Valor Declino en Control': p.declino_valor_control,
+                    'Diferencia (%)': p.diferencia_declino_control,
+                    'Actividad': p.actividad,
+                    'Área': p.area,
+                })
+
+        if not report_data:
+            self.console.print("[green]¡Excelente! No se encontraron pozos con calidad de declino 'Mala' o 'Regular'.[/green]")
+            return
+
+        df_report = pd.DataFrame(report_data)
+        df_report = df_report.sort_values(by=['Calidad Declino', 'Diferencia (%)'], ascending=[True, False])
+
+        # Display in console
+        table = Table(title="Pozos con Calidad de Declino Regular o Mala", show_lines=True)
+        table.add_column("Pozo", style="cyan")
+        table.add_column("Calidad", style="yellow")
+        table.add_column("Últ. Control", justify="right")
+        table.add_column("Valor Declino", justify="right")
+        table.add_column("Dif. (%)", justify="right", style="red")
+        table.add_column("Fecha Control")
+
+        for _, row in df_report.iterrows():
+            table.add_row(
+                row['Pozo'],
+                row['Calidad Declino'],
+                f"{row['Último Control (Bruta)']:.2f}" if pd.notna(row['Último Control (Bruta)']) else "N/A",
+                f"{row['Valor Declino en Control']:.2f}" if pd.notna(row['Valor Declino en Control']) else "N/A",
+                f"{row['Diferencia (%)']:.1f}%" if pd.notna(row['Diferencia (%)']) else "N/A",
+                row['Fecha Último Control'].strftime('%Y-%m-%d') if pd.notna(row['Fecha Último Control']) else "N/A"
+            )
+        
+        self.console.print(table)
+
+        # Export to Excel
+        try:
+            import os
+            os.makedirs("Resultados", exist_ok=True)
+            output_path = 'Resultados/Reporte_Calidad_Declino.xlsx'
+            df_report.to_excel(output_path, index=False)
+            self.console.print(f"\n[green]Reporte de calidad de declino exportado a '{output_path}'[/green]")
+        except Exception as e:
+            self.console.print(f"\n[red]Error al exportar el reporte de calidad de declino: {e}[/red]")
 
     def run_section_diagnose_missing_wells(self):
         self.console.rule("[bold red]F. Diagnóstico de Pozos Descartados[/bold red]")
@@ -1927,14 +2185,26 @@ def conectarse_cns(query):
     Se conecta a Oracle CNS, ejecuta la consulta y devuelve un DataFrame.
     """
     try:
-        user_id = 'sahara'    
-        user_password = 'sahara'
+        # Credenciales por defecto
+        user_id = 'sahara'
+        user_password = 'sahara' # Contraseña por defecto conocida para CNS
         server = 'SLPBUETBORA15'    
         port = 1527    
         sid = "PSSH" 
         
         dsn_tns = cx_Oracle.makedsn(server, port, sid)
-        connection=cx_Oracle.connect(user=user_id, password=user_password, dsn=dsn_tns)
+        
+        try:
+            connection = cx_Oracle.connect(user=user_id, password=user_password, dsn=dsn_tns)
+        except cx_Oracle.DatabaseError:
+            # Si falla la conexión por defecto, pedir credenciales al usuario
+            print("\n[!] Falló la conexión automática a CNS. Ingrese credenciales manuales:")
+            from rich.prompt import Prompt
+            user_id = Prompt.ask("Usuario CNS", default="sahara")
+            user_password = Prompt.ask("Contraseña CNS", password=True)
+            # Reintentar conexión
+            connection = cx_Oracle.connect(user=user_id, password=user_password, dsn=dsn_tns)
+
         
         df = pd.read_sql(query, connection)
         return df
@@ -1948,13 +2218,26 @@ def conectarse_teradata(query, chunksize=None):
     y muestra el progreso. De lo contrario, lee todo de una vez.
     """
     try:
+        # Intentar primero con credenciales hardcodeadas (útil para ti)
         dict_conection = {
             'host': 'tdprod',
             'logmech': 'LDAP',
             'user': 'ry32287',
-            'password': '4theEmperor!!'
+            'password': '4theEmperor!!!'
         }
-        with teradatasql.connect(**dict_conection) as conexion:
+        
+        try:
+            conexion = teradatasql.connect(**dict_conection)
+        except Exception:
+            # Si falla (otro usuario o cambio de clave), pedir credenciales
+            print("\n[!] Falló la conexión automática a Teradata. Ingrese sus credenciales:")
+            from rich.prompt import Prompt
+            user_td = Prompt.ask("Usuario Teradata (Legajo)")
+            pass_td = Prompt.ask("Contraseña Teradata", password=True)
+            dict_conection.update({'user': user_td, 'password': pass_td})
+            conexion = teradatasql.connect(**dict_conection)
+
+        with conexion:
             if chunksize:
                 # Modo de lectura en bloques con barra de progreso
                 console = Console()
@@ -1994,95 +2277,169 @@ def main_menu():
     workflow = UPAWorkflow()
     console = Console()
 
-    menu_actions = {
-        "1": workflow.run_section_1_load_excel_data,
-        "1B": workflow.run_section_1b_load_from_database,
-        "2": workflow.run_section_2_save_to_parquet,
-        "3": workflow.run_section_3_load_from_parquet,
-        "A": workflow.run_section_show_parquet_df_info, # Nueva opción
-        "4": workflow.run_section_4_create_pozo_objects,
-        "B": workflow.run_section_inspect_pozo,
-        "D": workflow.run_section_diagnose_well_matching, # Nueva herramienta de diagnóstico
-        "5": workflow.run_section_5_create_upa_plans,
-        "6": workflow.run_section_6_process_aseguramiento,
-        "7": workflow.run_section_7_calculate_edt_losses,
-        "8": workflow.run_section_8_calculate_cierre_upa_losses,
-        "C": workflow.run_section_show_upa_monthly_report, # Nueva acción
-        "E": workflow.run_section_show_all_wells_report,
-        "F": workflow.run_section_diagnose_missing_wells,
-    }
+    def submenu_gestion_datos():
+        while True:
+            console.rule("[bold blue]📂 Gestión de Datos[/bold blue]")
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Opción", style="dim", width=6)
+            table.add_column("Descripción")
+            table.add_row("1", "Cargar Archivos [bold yellow]Excel[/bold yellow] (Offline)")
+            table.add_row("2", "Cargar desde [bold green]Bases de Datos[/bold green] (Online)")
+            table.add_row("3", "Guardar DataFrames a Parquet")
+            table.add_row("4", "Cargar DataFrames desde Parquet")
+            table.add_row("5", "Mostrar Información de DataFrames Cargados")
+            table.add_row("0", "Volver al Menú Principal")
+            console.print(table)
+            
+            choice = Prompt.ask("Seleccione una opción", choices=["1", "2", "3", "4", "5", "0"], default="0")
+            
+            if choice == "0": break
+            elif choice == "1": workflow.run_section_1_load_excel_data()
+            elif choice == "2": workflow.run_section_1b_load_from_database()
+            elif choice == "3": workflow.run_section_2_save_to_parquet()
+            elif choice == "4": workflow.run_section_3_load_from_parquet()
+            elif choice == "5": workflow.run_section_show_parquet_df_info()
+            Prompt.ask("\n[cyan]Presione Enter para continuar...[/cyan]", default="")
+
+    def submenu_procesamiento():
+        while True:
+            console.rule("[bold blue]⚙️ Procesamiento y Cálculos[/bold blue]")
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Opción", style="dim", width=6)
+            table.add_column("Descripción")
+            table.add_row("1", "Crear Objetos Pozo (Requiere Datos Cargados)")
+            table.add_row("2", "Crear Planes UPA (Sin/Con Límite)")
+            table.add_row("3", "Procesar Aseguramiento de Pozos")1
+            table.add_row("4", "Calcular Pérdidas EDT")
+            table.add_row("5", "Calcular Pérdidas por Cierre UPA")
+            table.add_row("0", "Volver al Menú Principal")
+            console.print(table)
+            
+            choice = Prompt.ask("Seleccione una opción", choices=["1", "2", "3", "4", "5", "0"], default="0")
+            
+            if choice == "0": break
+            elif choice == "1": workflow.run_section_4_create_pozo_objects()
+            elif choice == "2": workflow.run_section_5_create_upa_plans()
+            elif choice == "3": workflow.run_section_6_process_aseguramiento()
+            elif choice == "4": workflow.run_section_7_calculate_edt_losses()
+            elif choice == "5": workflow.run_section_8_calculate_cierre_upa_losses()
+            Prompt.ask("\n[cyan]Presione Enter para continuar...[/cyan]", default="")
+
+    def submenu_diagnostico():
+        while True:
+            console.rule("[bold blue]🔍 Diagnóstico e Inspección[/bold blue]")
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Opción", style="dim", width=6)
+            table.add_column("Descripción")
+            table.add_row("1", "Inspeccionar un Objeto Pozo Específico")
+            table.add_row("2", "Diagnosticar Coincidencia de Nombres")
+            table.add_row("3", "Reporte de Pozos Descartados")
+            table.add_row("0", "Volver al Menú Principal")
+            console.print(table)
+            
+            choice = Prompt.ask("Seleccione una opción", choices=["1", "2", "3", "0"], default="0")
+            
+            if choice == "0": break
+            elif choice == "1": workflow.run_section_inspect_pozo()
+            elif choice == "2": workflow.run_section_diagnose_well_matching()
+            elif choice == "3": workflow.run_section_diagnose_missing_wells()
+            Prompt.ask("\n[cyan]Presione Enter para continuar...[/cyan]", default="")
+
+    def submenu_reportes():
+        while True:
+            console.rule("[bold blue]📊 Generación de Reportes[/bold blue]")
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Opción", style="dim", width=6)
+            table.add_column("Descripción")
+            table.add_row("1", "Reporte Mensual de Pozos [bold green]EN PLAN[/bold green]")
+            table.add_row("2", "Reporte [bold yellow]COMPLETO[/bold yellow] (Todos los Pozos)")
+            table.add_row("3", "Reporte de [bold red]Calidad de Declino[/bold red]")
+            table.add_row("0", "Volver al Menú Principal")
+            console.print(table)
+            
+            choice = Prompt.ask("Seleccione una opción", choices=["1", "2", "3", "0"], default="0")
+            
+            if choice == "0": break
+            elif choice == "1": workflow.run_section_show_upa_monthly_report()
+            elif choice == "2": workflow.run_section_show_all_wells_report()
+            elif choice == "3": workflow.run_section_show_decline_quality_report()
+            Prompt.ask("\n[cyan]Presione Enter para continuar...[/cyan]", default="")
+
+    def submenu_ejecucion_completa():
+        while True:
+            console.rule("[bold blue]🚀 Ejecución Automática[/bold blue]")
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Opción", style="dim", width=6)
+            table.add_column("Descripción")
+            table.add_row("1", "Flujo Completo desde [bold yellow]Excel[/bold yellow]")
+            table.add_row("2", "Flujo Completo desde [bold green]Base de Datos[/bold green]")
+            table.add_row("0", "Volver al Menú Principal")
+            console.print(table)
+            
+            choice = Prompt.ask("Seleccione una opción", choices=["1", "2", "0"], default="0")
+            
+            if choice == "0": break
+            elif choice == "1":
+                console.print("[bold yellow]Ejecutando flujo completo (Excel)...[/bold yellow]")
+                steps = [
+                    workflow.run_section_1_load_excel_data,
+                    workflow.run_section_2_save_to_parquet,
+                    workflow.run_section_3_load_from_parquet,
+                    workflow.run_section_4_create_pozo_objects,
+                    workflow.run_section_5_create_upa_plans,
+                    workflow.run_section_6_process_aseguramiento,
+                    workflow.run_section_7_calculate_edt_losses,
+                    workflow.run_section_8_calculate_cierre_upa_losses
+                ]
+                for step in steps:
+                    try: step()
+                    except Exception as e: 
+                        console.print(f"[red]Error: {e}[/red]")
+                        break
+            elif choice == "2":
+                console.print("[bold yellow]Ejecutando flujo completo (BD)...[/bold yellow]")
+                steps = [
+                    workflow.run_section_1b_load_from_database,
+                    workflow.run_section_1_load_excel_data,
+                    workflow.run_section_2_save_to_parquet,
+                    workflow.run_section_3_load_from_parquet,
+                    workflow.run_section_4_create_pozo_objects,
+                    workflow.run_section_5_create_upa_plans,
+                    workflow.run_section_6_process_aseguramiento,
+                    workflow.run_section_7_calculate_edt_losses,
+                    workflow.run_section_8_calculate_cierre_upa_losses
+                ]
+                for step in steps:
+                    try: step()
+                    except Exception as e: 
+                        console.print(f"[red]Error: {e}[/red]")
+                        break
+            Prompt.ask("\n[cyan]Presione Enter para continuar...[/cyan]", default="")
 
     while True:
-        console.rule("[bold cyan]Menú Principal de Procesamiento UPA[/bold cyan]")
+        console.rule("[bold cyan]Menú Principal UPA[/bold cyan]")
         table = Table(show_header=True, header_style="bold magenta")
         table.add_column("Opción", style="dim", width=6)
-        table.add_column("Descripción")
-
-        table.add_row("1", "Cargar Archivos [bold yellow]Excel[/bold yellow] Complementarios (Modo Offline)")
-        table.add_row("1B", "Cargar Datos desde [bold green]Bases de Datos[/bold green] (Online)")
-        table.add_row("2", "Guardar DataFrames a Parquet")
-        table.add_row("3", "Cargar DataFrames desde Parquet")
-        table.add_row("A", "Mostrar Información de DataFrames Parquet Cargados")
-        table.add_row("4", "Crear Objetos Pozo")
-        table.add_row("B", "Inspeccionar un Objeto Pozo Específico")
-        table.add_row("D", "Diagnosticar Coincidencia de Nombres de Pozo")
-        table.add_row("5", "Crear Planes UPA (Sin Límite y Con Límite)")
-        table.add_row("6", "Procesar Aseguramiento de Pozos")
-        table.add_row("7", "Calcular Pérdidas EDT")
-        table.add_row("8", "Calcular Pérdidas por Cierre UPA")
-        table.add_row("C", "Mostrar Reporte Mensual de Pozos [bold green]EN PLAN[/bold green] UPA")
-        table.add_row("E", "Generar Reporte de [bold yellow]TODOS[/bold yellow] los Pozos (En Plan y Fuera de Plan)")
-        table.add_row("F", "Generar Reporte de Pozos [bold red]DESCARTADOS[/bold red] (Diagnóstico)")
-        table.add_row("9", "Ejecutar Flujo Completo (desde [bold yellow]Excel[/bold yellow])")
-        table.add_row("9B", "Ejecutar Flujo Completo (desde [bold green]BD[/bold green])")
+        table.add_column("Categoría")
+        
+        table.add_row("1", "📂 Gestión de Datos (Carga, Guardado, Info)")
+        table.add_row("2", "⚙️ Procesamiento (Pozos, Planes, Cálculos)")
+        table.add_row("3", "🔍 Diagnóstico e Inspección")
+        table.add_row("4", "📊 Reportes y Exportación")
+        table.add_row("5", "🚀 Ejecución Automática")
         table.add_row("0", "Salir")
         
         console.print(table)
-        choice = Prompt.ask("Seleccione una opción", choices=list(menu_actions.keys()) + ["9", "9B", "0"], default="0")
+        choice = Prompt.ask("Seleccione una categoría", choices=["1", "2", "3", "4", "5", "0"], default="0")
+        
         if choice == "0":
             console.print("[bold yellow]Saliendo del programa.[/bold yellow]")
             break
-        elif choice == "9":
-            console.print("[bold yellow]Ejecutando todas las secciones secuencialmente (desde Excel)...[/bold yellow]")
-            # Ejecuta secciones 1-3 y luego 4-8
-            sections_to_run = ["1", "2", "3", "4", "5", "6", "7", "8"]
-            for section_key in sections_to_run:
-                action = menu_actions.get(section_key)
-                if action:
-                    try:
-                        console.print(f"[bold blue]Ejecutando Sección {section_key}...[/bold blue]")
-                        action()
-                    except Exception as e:
-                        console.print(f"[bold red]Error en la sección {section_key}: {e}[/bold red]")
-                        console.print_exception(show_locals=True)
-                        break 
-            console.print("[bold green]Todas las secciones ejecutadas (o detenidas por error).[/bold green]")
-        elif choice == "9B":
-            console.print("[bold yellow]Ejecutando todas las secciones secuencialmente (desde Bases de Datos)...[/bold yellow]")
-            # Ejecuta secciones 1B, 1 (complementarios), 2-3 y luego 4-8
-            sections_to_run = ["1B", "1", "2", "3", "4", "5", "6", "7", "8"]
-            for section_key in sections_to_run:
-                action = menu_actions.get(section_key)
-                if action:
-                    try:
-                        console.print(f"[bold blue]Ejecutando Sección {section_key}...[/bold blue]")
-                        action()
-                    except Exception as e:
-                        console.print(f"[bold red]Error en la sección {section_key}: {e}[/bold red]")
-                        console.print_exception(show_locals=True)
-                        break 
-            console.print("[bold green]Todas las secciones ejecutadas (o detenidas por error).[/bold green]")
-        elif choice in menu_actions:
-            action = menu_actions[choice]
-            try:
-                action()
-            except Exception as e:
-                console.print(f"[bold red]Error ejecutando la sección {choice}: {e}[/bold red]")
-                console.print_exception(show_locals=True)
-        else:
-            console.print("[red]Opción no válida. Intente de nuevo.[/red]")
-        
-        Prompt.ask("\n[cyan]Presione Enter para continuar...[/cyan]", default="")
+        elif choice == "1": submenu_gestion_datos()
+        elif choice == "2": submenu_procesamiento()
+        elif choice == "3": submenu_diagnostico()
+        elif choice == "4": submenu_reportes()
+        elif choice == "5": submenu_ejecucion_completa()
 
 if __name__ == "__main__":
     main_menu()
@@ -2091,3 +2448,10 @@ if __name__ == "__main__":
 
     # Armar la para el analisis RTA
     # Para realizar la prueba del commitD
+    # Implementación de un submenu para cargar las consultas de bases de datos y guardar archivo
+    # Armar archivos ymal o json con los numeros magicos puestos
+    # Mejorar filtrado en el script en la creación de pozos para agilizar la velocidad de creación de los pozos
+    # Implementar un json en donde cargue de manera dinamica los datasets, es decir pasarle las consultas SQL y el nombre del dataset
+    # Implementación de analisis IP vs tiempo
+    # Variable que cuente la cantidad de eventos que el pozo ara ver si se le hizo la BIF/CBM
+    #Crear carpeta destino por cada corrida, que se genere cuando se crean los pozos para guardar los excel resultados
